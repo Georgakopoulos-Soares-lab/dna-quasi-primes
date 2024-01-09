@@ -12,3 +12,8 @@ Data Directory
 - hg38_QPs_coordinates.bed
 - hg38_QPs_coordinates.bed_control.bed
   
+Code:
+- qp-singlcell-published.Rmd (R Markdown file for all single cell plots)
+- constraintandpLOF.ipynb (Jupyter Notebook file for constraint and pLOF variant analysis plots)
+- Regulome_plot.ipynb (Jupyter Notebook file for Regulome analysis plots)
+- QP_chipseq_enrichment.ipynb (Jupyter Notebook file for chipseq enrichment analysis plots)
