@@ -1,0 +1,2 @@
+INFO:root:he following files are considered the target group and thus must contain all of the found quasi-primes: ['test/qp_test_file.qp.gz']
+INFO:root:The following files are considered the background and thus cannot contain any of the found quasi-primes: ['test/sample1.txt.gz', 'test/sample3.txt.gz', 'test/sample7.txt.gz', 'test/sample9.txt.gz', 'test/sample5.txt.gz', 'test/sample0.txt.gz', 'test/sample2.txt.gz', 'test/sample6.txt.gz', 'test/sample8.txt.gz', 'test/sample4.txt.gz']
