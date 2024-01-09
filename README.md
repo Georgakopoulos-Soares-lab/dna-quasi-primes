@@ -1,5 +1,5 @@
 # quasi-prime-humancasestudy
-Repo for human quasi prime case study and manuscript for Mouratidis, Konnaris, Chantzi, and Chan et al. 
+Repo for human quasi prime case study and manuscript for Mouratidis, Konnaris, Chantzi, and Chan et al. from Dr. Ilias Georgakopolous-Soares Lab at Penn State University.
 
 Data Directory
 - hg38_QPs_genes_symbols.txt (Nucleic Quasi-prime gene symbols - Genes that align with Nucleic quasi-prime regions)
