@@ -11,6 +11,7 @@ Data Directory
 - ENCFF250UJY.tsv
 - hg38_QPs_coordinates.bed
 - hg38_QPs_coordinates.bed_control.bed
+- distributions.zip
   
 Code:
 - qp-singlecell-published.Rmd (R Markdown file for all single cell plots)
@@ -20,3 +21,4 @@ Code:
 - QP_extraction/generate_test_data.py (Generate sample data for quasi-prime extraction example)
 - QP_extraction/quasi_prime_extractor.py (Show example of QP_extraction of a single species or taxonomy)
 - tissue_specificity.ipynb (Jupyter Notebook file for quasi-prime gene expression across tissues)
+- distributions/plots.ipynb (Jupyter Notebook file to plot enrichment data in distributions.zip)
