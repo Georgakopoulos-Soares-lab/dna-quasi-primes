@@ -1,6 +1,10 @@
 # quasi-prime-humancasestudy
 Repo for human quasi prime case study and manuscript for Mouratidis, Konnaris, Chantzi, and Chan et al. from Dr. Ilias Georgakopolous-Soares Lab at Penn State University.
 
+<p align="center">
+<img src="https://github.com/Georgakopoulos-Soares-lab/quasi-prime-humancasestudy/blob/efcd5cd179df945f34051073364aa08c9d4d787a/qp_schematic_dna_FIG1.png?raw=true" width=50% height=50%>
+</p>
+
 Data Directory
 - hg38_QPs_genes_symbols.txt (Nucleic Quasi-prime gene symbols - Genes that align with Nucleic quasi-prime regions)
 - allen_all.rds (Allen Brain Institute - Human M1 Primary Motor Cortex)
