@@ -17,3 +17,5 @@ Code:
 - constraintandpLOF.ipynb (Jupyter Notebook file for constraint and pLOF variant analysis plots)
 - Regulome_plot.ipynb (Jupyter Notebook file for Regulome analysis plots)
 - QP_chipseq_enrichment.ipynb (Jupyter Notebook file for chipseq enrichment analysis plots)
+- QP_extraction/generate_test_data.py (Generate sample data for quasi-prime extraction example)
+- QP_extraction/quasi_prime_extractor.py (Show example of QP_extraction of a single species or taxonomy)
