@@ -1,0 +1,1730 @@
+---
+title: "qp-singlecell"
+author: "Maxwell Konnaris -- Georgakopoulos-Soares Lab"
+date: "2023-08-05"
+output: 
+  html_document: 
+    toc: yes
+    fig_width: 10
+    fig_height: 10
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library, message=FALSE}
+
+# Load required libraries
+library(devtools)  
+library(biomaRt)  
+library(disgenet2r)  
+library(dplyr)  
+library(ggplot2)  
+library(sets)  
+library(xtable)  
+library(Gviz)  
+library(kmer)  
+library(gplots)  
+library(bioseq)  
+library(ape)  
+library(Seurat)  
+library(edgeR)  
+library(limma)  
+library(tidyverse)  
+library(readr)  
+library(sleepwalk)  
+library(fgsea)
+library(org.Hs.eg.db)
+library(KEGGREST)
+library(GOplot)
+library(clusterProfiler)  
+library(igraph)  
+library(STRINGdb)  
+library(leiden)  
+library(pheatmap)  
+library(patchwork) 
+library(future)
+library(ggrepel)
+library(EnhancedVolcano)
+library(enrichplot)
+library(DOSE)
+library(ggupset)
+library(tidytree)
+library(mitch)
+library(GOSemSim)
+library(VennDiagram)
+library(scran)
+library(SingleCellExperiment)
+library(transformGamPoi)
+library(ggdendro)
+library(cowplot)
+library(ggtree)
+
+set.seed(1)
+
+# change the current plan to access parallelization
+plan("multisession")
+
+# Set no limits for visualizing data
+options(future.globals.maxSize = 8000 * 1024^2)
+
+folder = "data"
+
+## It is assumed the data folder is downloaded, but if not
+if (file.exists(folder)) {
+  cat("The data folder already exists")
+} else {
+  cat("Please download the data folder from github")
+  # Check if svn is installed
+  if (Sys.which("svn") == "") {
+    print("svn is not installed, please install svn on your system")
+  } else {
+    cat("SVN Download initiated")
+    cat("Downloading the data folder from github")
+    # Specify the URL of the folder on GitHub
+    url <- "https://github.com/Georgakopoulos-Soares-lab/quasi-prime-humancasestudy.git"
+    # Use the system() function to call svn
+    system(paste("svn checkout", url))
+    cat("Download complete")
+  }
+}
+
+dir_path = "finalanalysis"
+subdir_path1 = "originaldata"
+subdir_path2 = "shiftedlog"
+subdir_path3 = "qc"
+subdir_path4 = "varianceplots"
+subdir_path5 = "diffexpression"
+subdir_path6 = "ora"
+subdir_path7 = "gsea"
+subdir_path8 = "enrichment"
+subdir_path9 = "umlsenrichment"
+
+# Check if the directory exists
+if (file.exists(folder)) {
+  cat("The final analysis directory already exists")
+} else {
+  cat("Creating Directories")
+  # Create the directory and subdirectory
+  dir.create(file.path(dir_path, subdir_path1), recursive = TRUE)
+  dir.create(file.path(dir_path, subdir_path2, subdir_path3), recursive = TRUE)
+  dir.create(file.path(dir_path, subdir_path2, subdir_path4), recursive = TRUE)
+  dir.create(file.path(dir_path, subdir_path2, subdir_path5), recursive = TRUE)
+  dir.create(file.path(dir_path, subdir_path2, subdir_path6), recursive = TRUE)
+  dir.create(file.path(dir_path, subdir_path2, subdir_path7), recursive = TRUE)
+  dir.create(file.path(dir_path, subdir_path2, subdir_path8), recursive = TRUE)
+  dir.create(file.path(dir_path, subdir_path2, subdir_path9), recursive = TRUE)
+  cat("Directories Created")
+  }
+               
+```
+
+```{r load data, message=FALSE}
+
+# Set output directory for final figures / data
+output_dir <- "/finalanalysis/originaldata"
+
+# Load seurat object
+data = readRDS(file = "/data/allen_all.rds")
+
+# Load in Quasi-prime associated genes
+qps <- array(readLines("/data/hg38_QPs_genes_symbols.txt"))
+
+# Set Heigh and Width
+width = 10
+height = 10
+
+#  make object a dataframe and set the identity label as the Cell type via subclass label
+data <- SetIdent(data, value = "subclass_label")
+df = as.data.frame(data@meta.data)
+
+# Create a grouped data frame with counts
+grouped <- table(df$class_label, df$donor_sex_label)
+
+# Convert the table to a data frame
+grouped_df <- as.data.frame(grouped)
+
+# Rename the columns for better readability
+colnames(grouped_df) <- c('class_label', 'donor_sex_label', 'Count')
+
+# Load the ggplot2 package and create the bar plot
+ggplot(grouped_df, aes(x = class_label, y = Count, fill = donor_sex_label)) +
+  geom_bar(stat = 'identity', position = 'stack') +
+  labs(x = 'Cell Class', y = 'Count', title = 'Count of Males and Females per Cell Class') +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+# assuming your data frame is called df
+all_summary_data <- df %>%
+  group_by(class_label, subclass_label) %>%
+  summarise(counts = n()) %>%
+  mutate(percentages = counts / sum(.$counts) * 100)
+
+colnames(all_summary_data) = c("Class Label", "Cell Type", "Count", "Percentage")
+
+# Reorder the levels of the Class Label factor
+all_summary_data$`Class Label` <- factor(all_summary_data$`Class Label`, levels = c("GABAergic", "Glutamatergic", "Non-Neuronal"))
+
+cbbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+### Create tsne plots and bar charts describing data
+p = ggplot(all_summary_data, aes(x = `Cell Type`, y = Percentage, fill = `Class Label`)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(Count))), vjust = -0.5) +
+  theme_minimal() +
+  theme(panel.background = element_blank(),
+        axis.line = element_line(size = 1),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank()) +
+  scale_fill_manual(name="Cell class", values=cbbPalette) +
+  scale_y_continuous(expand=c(0,0)) +
+  scale_x_discrete(limits=all_summary_data$`Cell Type`[order(all_summary_data$Percentage)])
+
+p
+ggsave(paste0(output_dir, "/cellcount.png"), p, width = 10, height = 10, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/cellcount.svg"), p, width = 10, height = 10, units = "in", dpi = 300)
+
+p =  DimPlot(data, label = T, repel = T, group.by = "subclass_label", reduction="tsne") 
+p = p + theme(plot.title = element_blank())
+p
+
+ggsave(paste0(output_dir, "/originaltsne.png"), p, width = 10, height = 10, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/originaltsne.svg"), p, width = 10, height = 10, units = "in", dpi = 300)
+
+p =  DimPlot(data, group.by = "donor_sex_label", reduction="tsne") 
+p = p + theme(plot.title = element_blank())
+p
+
+ggsave(paste0(output_dir, "/originaltsne_sex.png"), p, width = 10, height = 10, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/originaltsne_sex.svg"), p, width = 10, height = 10, units = "in", dpi = 300)
+
+
+p =  DimPlot(data, label = T, repel = T, group.by = "class_label", reduction="tsne", cols = cbbPalette) 
+p = p + theme(plot.title = element_blank())
+p
+
+ggsave(paste0(output_dir, "/originaltsne_class.png"), p, width = 10, height = 10, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/originaltsne_class.svg"), p, width = 10, height = 10, units = "in", dpi = 300)
+
+head(data@meta.data, 5)
+
+# Find Ribsomal Genes
+grep("^RP[LS]",rownames(data@assays$RNA@counts),value = TRUE)
+data$percent.Ribosomal = PercentageFeatureSet(data,pattern="^RP[LS]")
+
+n_genes_before <- ncol(data)
+data <- data[, which(colSums(data@assays$RNA@counts > 0) >= 10)]
+n_genes_after <- ncol(data)
+
+# calculate and print the number of genes removed
+n_genes_removed <- n_genes_before - n_genes_after
+cat(paste0("Number of genes removed: ", n_genes_removed, "\n"))
+
+CellCycleScoring(data, s.features = cc.genes.updated.2019$s.genes, 
+                 g2m.features = cc.genes.updated.2019$g2m.genes, set.ident = FALSE) -> data
+
+# Open an SVG graphics device and output the percent gene total count per cell before MALAT1 removal
+svg(paste0(output_dir,"/percentgenetotalcountpercell_beforeMALAT1removal.svg"))
+
+par(mar = c(4, 8, 2, 1))
+C <- data@assays$RNA@counts
+C <- Matrix::t(Matrix::t(C)/Matrix::colSums(C)) * 100
+most_expressed <- order(apply(C, 1, median), decreasing = T)[20:1]
+
+# box plot of gene expressed as total count per cell
+boxplot(as.matrix(t(C[most_expressed, ])), cex = 0.1, las = 1, xlab = "% total count per cell",
+    col = (scales::hue_pal())(20)[20:1], horizontal = TRUE)
+
+# Close the graphics device
+dev.off()
+
+# Get a list of all variables in the global environment
+all_variables <- ls()
+
+# Loop over the variables and delete any that are not the Seurat object
+for (variable in all_variables) {
+  if (variable != "data" & variable != "qps" & variable != "width" & variable != "height") {
+    rm(list = variable)
+  }
+}
+
+# Remove variables
+rm(variable)
+rm(all_variables)
+
+# Define the gene sets
+all_genes <- rownames(data)
+qps_genes <- intersect(rownames(data), qps)
+nonqps_genes <- setdiff(all_genes, qps_genes)
+
+# Create a named character vector that maps gene names to their corresponding labels
+gene_labels <- c(rep("QP Gene", length(qps_genes)), rep("Non QP Gene", length(nonqps_genes)))
+names(gene_labels) <- c(qps_genes, nonqps_genes)
+
+
+```
+
+
+```{r lognormalize}
+
+### Log normalization and comparison of normalization techniques
+
+output_dir = "finalanalysis/shiftedlog"
+
+# Convert the Seurat object into a SingleCellExperiment object
+sce = as.SingleCellExperiment(data)
+
+#data = SCTransform(data, vst.flavor = "v2", verbose = FALSE)
+#assay(sce, "acosh") <- transformGamPoi(sce, transformation = "acosh")
+assay(sce, "shifted_log") <- shifted_log_transform(sce, overdispersion = 0.1)
+#data[["acosh"]] <- CreateAssayObject(counts = assay(sce, "acosh"))
+#data[["shifted_log"]] <- CreateAssayObject(counts = assay(sce, "shifted_log"))
+
+newdata <- as.Seurat(sce, counts = "counts", data = "shifted_log")
+
+### Visualizing normalization comparisons
+
+# par(pch = 20, cex = 1.15)
+# mus <- rowMeans2(data@assays$RNA@counts)
+# mus_subset <- rowMeans2(data@assays$SCT@counts)
+# 
+# # Set the output file name and dimensions
+# output_file <- "/storage/group/izg5139/default/maxwell/humandnaquasiprimes/finalanalysis/normalization_comparison.svg"
+# width <- 8
+# height <- 6
+# 
+# # Open a PNG graphics device
+# svg(output_file, width = width, height = height)
+# 
+# # Create the plot
+# plot(mus, rowVars(data@assays$acosh@data), log = "x", col = "#1b9e77aa", cex = 0.6,
+#      xlab =  "Log Gene Means", ylab = "Variance after transformation")
+# points(mus, rowVars(data@assays$shifted_log@data), col = "#d95f02aa", cex = 0.6)
+# points(mus, rowVars(data@assays$RNA@data), col = "red", cex = 0.6)
+# points(mus_subset, rowVars(data@assays$SCT@data), col = "blue", cex = 0.6)
+# legend("topleft", legend = c("acosh", 
+#                              "shifted log",
+#                              "log transform",
+#                              "SCTransform"),
+#        col = c("#1b9e77","#d95f02", "red","blue" ), pch = 16)
+# 
+# # Close the graphics device
+# dev.off()
+
+# remove old data objects to save space
+rm(data)
+rm(sce)
+
+# format new data object
+
+newdata@active.assay = "RNA"
+newdata <- SetIdent(newdata, value = "subclass_label")
+newdata = FindVariableFeatures(newdata, selection.method = "vst", nfeatures = 2000)
+newdata = ScaleData(newdata, features = VariableFeatures(newdata))
+
+# variable_features <- VariableFeatures(newdata)
+# common_features <- intersect(variable_features, qps_genes)
+# percentage_in_gene_set <- length(common_features) / length(variable_features) * 100
+# percentage_not_in_gene_set <- 100 - percentage_in_gene_set
+# non_variable_features <- setdiff(rownames(newdata), variable_features)
+# non_common_features <- intersect(non_variable_features, qps_genes)
+# percentage_in_gene_set_non_variable <- length(non_common_features) / length(non_variable_features) * 100
+# percentage_not_in_gene_set_non_variable <- 100 - percentage_in_gene_set_non_variable
+# data <- rbind(newdata, data.frame(
+#   group = c("Non-Highly Variable QP Genes", "Non-Highly Variable Non-QP Genes"),
+#   percentage = c(percentage_in_gene_set_non_variable, percentage_not_in_gene_set_non_variable),
+#   count = c(length(non_common_features), length(non_variable_features) - length(non_common_features))
+# ))
+
+# # Create a contingency table
+# contingency_table <- xtabs(count ~ group, data)
+# contingency_table <- matrix(contingency_table, nrow = 2, byrow = TRUE)
+# rownames(contingency_table) = c("Highly Variable Genes", "Non Highly Variable Genes")
+# colnames(contingency_table) = c("Non QP Genes", "QP Genes")
+# contingency_table
+
+# # Calculate Fisher's exact test
+# fisher_test <- fisher.test(contingency_table)
+# pvalue <- fisher_test$p.value
+
+# # Calculate the effect size (phi coefficient)
+# n <- sum(contingency_table)
+# phi <- sqrt(chisq.test(contingency_table)$statistic / n)
+
+# cat("Fisher's exact test p-value:", pvalue, "\n")
+# cat("Effect size (phi coefficient):", phi, "\n")
+
+# p5 <- ggplot(data, aes(x = "", y = percentage, fill = group)) +
+#   geom_bar(width = 1, stat = "identity", color = "black") +
+#   coord_polar("y", start = 0) +
+#   scale_fill_manual(values = c("#0066CC", "#CC0033")) +
+#   theme(
+#     panel.background = element_blank(),
+#     axis.title.x = element_blank(),
+#     axis.title.y = element_blank(),
+#     axis.text.x = element_blank(),
+#     axis.text.y = element_blank(),
+#     axis.ticks.x = element_blank(),
+#     axis.ticks.y = element_blank()
+#   ) +
+#   geom_text(aes(label = paste0(count, " (", round(percentage, 1), "%)")), position = position_stack(vjust = 0.5))
+
+# p5
+
+# output_dir = "/storage/group/izg5139/default/maxwell/humandnaquasiprimes/finalanalysis/shiftedlog/varianceplots"
+# ggsave(paste0(output_dir, "/percentvariablefeatures.png"), p5, width = width, height = height, units = "in", dpi = 300)
+# ggsave(paste0(output_dir, "/percentvariablefeatures.svg"), p5, width = width, height = height, units = "in", dpi = 300)
+
+# Extract row names and values from the specified column
+vst_data <- newdata@assays$RNA@meta.features %>%
+  dplyr::select(vst.variance.standardized) %>%
+  as.data.frame()
+
+# Extract the row names and values separately
+rownames <- rownames(vst_data)
+values <- vst_data$vst.variance.standardized
+
+# Combine the row names and values into a data frame
+result <- data.frame(rownames, values)
+
+result <- result %>%
+  arrange(desc(values))
+top_50 <- head(result, 50)
+
+# Print the result
+print(result)
+print(top_50)
+
+### Creating plot to visualize the top variable genes per cell type
+seurat_object = newdata[top_50$rownames]
+
+average_expression = as.data.frame(AverageExpression(seurat_object))
+head(average_expression)
+
+my_tibble <- as_tibble(average_expression)
+
+my_tibble$gene = top_50$rownames
+print(my_tibble)
+
+gene_cluster_summary <- my_tibble %>%
+  gather(Cell_Type, average_expression, -gene) %>%
+  mutate(Cell_Type = gsub("RNA\\.", "", Cell_Type)) %>%
+  arrange(gene, Cell_Type)
+
+print(gene_cluster_summary)
+
+markers <- gene_cluster_summary$gene %>% unique()
+
+gene_cluster_summary %>% filter(gene %in% markers) %>% 
+  mutate(`Average Expression` = average_expression) %>% 
+  ggplot(aes(x=Cell_Type, y = gene, size = `Average Expression`)) + 
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(x = NULL, y = "Top Variable Genes", size = "Average Expression")
+
+filtered_summary <- gene_cluster_summary %>% 
+  filter(gene %in% markers, average_expression > 0) %>%
+  mutate(`Average Expression` = average_expression)
+
+# Convert gene column to factor with specified levels
+filtered_summary <- filtered_summary %>%
+  mutate(gene = factor(gene, levels = c(qps_genes, setdiff(filtered_summary$gene, qps_genes))))
+
+# Create dot plot 
+p <- ggplot(filtered_summary, aes(x = `Cell_Type`, y = gene, size = `Average Expression`, color = gene %in% qps_genes)) +
+  geom_point() +
+  theme_minimal() +
+  labs(x = NULL, y = "Top Variable Genes", size = "Average Expression") +
+  scale_color_manual(values = c("FALSE" = "blue", "TRUE" = "red"), labels = c("Highly variable non-QP gene", "Highly variable QP gene"), guide = guide_legend(title = NULL)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))  # Rotate x-axis labels
+
+print(p)
+ggsave(paste0(output_dir, "/variablefeaturespercelltype.png"), p, width = width, height = height, units = "in", dpi = 300)
+
+all_variables <- ls()
+# Loop over the variables and delete any that are not the Seurat object
+for (variable in all_variables) {
+  if (variable != "newdata" & variable != "qps_genes"  & variable != "nonqps_genes"& variable != "width" & variable != "height" & variable != "gene_labels" & variable != "output_dir") {
+    rm(list = variable)
+  }
+}
+rm(variable)
+rm(all_variables)
+
+```
+
+``` {r Feature Generation, QC, and plots on RNA}
+
+output_dir = "finalanalysis/shiftedlog/qc"
+
+# Obtain Largest Count
+apply(
+  newdata@assays$RNA@counts,
+  2,
+  max
+) -> newdata$largest_count
+
+apply(
+  newdata@assays$RNA@counts,
+  2,
+  which.max
+) -> newdata$largest_index
+
+newdata$largest_gene = rownames(newdata)[newdata$largest_index]
+newdata$percent.Largest.Gene = 100 * newdata$largest_count / newdata$nCount_RNA 
+
+fp1 = VlnPlot(newdata, features=c("nCount_RNA","nFeature_RNA",
+                                  #"percent.Ribosomal", #"percent.Largest.Gene",
+                                  "QP_score1"), split.by="subclass_label") + scale_y_log10() 
+fp1
+ggsave(paste0(output_dir, "/vlnplotmetanewdatabycelltype.png"), fp1, width = width, height = height, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/vlnplotmetanewdatabycelltype.svg"), fp1, width = width, height = height, units = "in", dpi = 300)
+
+fp2 = FeatureScatter(newdata,feature1 = "nCount_RNA", feature2 = "percent.Largest.Gene", group.by="subclass_label")
+fp2
+#ggsave(paste0(output_dir, "/scatterplttmetanewdatabycelltype.png"), fp2, width = width, height = height, units = "in", dpi = 300)
+#ggsave(paste0(output_dir, "/scatterplttmetanewdatabycelltype.svg"), fp2, width = width, height = height, units = "in", dpi = 300)
+
+
+as_tibble(
+  newdata[[]],
+  rownames="Cell.Barcode"
+  ) -> qc.metrics
+
+qc.metrics %>%
+  mutate(complexity=log10(nFeature_RNA) / log10(nCount_RNA))  -> qc.metrics
+
+lm(log10(qc.metrics$nFeature_RNA)~log10(qc.metrics$nCount_RNA)) -> complexity.lm
+
+qc.metrics %>%
+  mutate(
+    complexity_diff = log10(nFeature_RNA) - ((log10(qc.metrics$nCount_RNA)*complexity.lm$coefficients[2])+complexity.lm$coefficients[1])
+  ) -> qc.metrics
+
+p1 <- qc.metrics %>%
+  ggplot(aes(x=complexity_diff)) +
+  geom_density(fill="yellow")
+p1
+ggsave(paste0(output_dir, "/complexitydiff.png"), p1, width = 10, height = 10, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/complexitydiff.svg"), p1, width = 10, height = 10, units = "in", dpi = 300)
+
+min(c(max(qc.metrics$complexity_diff),0-min(qc.metrics$complexity_diff))) -> complexity_scale
+
+p2 <- qc.metrics %>%
+  mutate(complexity_diff=replace(complexity_diff,complexity_diff< -0.1,-0.1)) %>%
+  ggplot(aes(x=log10(nCount_RNA), y=log10(nFeature_RNA), colour=complexity_diff)) +
+  geom_point(size=0.5) +
+  geom_abline(slope=complexity.lm$coefficients[2], intercept = complexity.lm$coefficients[1]) +
+  scale_colour_gradient2(low="blue2",mid="grey",high="red2")
+p2
+ggsave(paste0(output_dir, "/complexitydiffbyfeature.png"), p2, width = 10, height = 10, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/complexitydiffbyfeature.svg"), p2, width = 10, height = 10, units = "in", dpi = 300)
+
+p3 <- qc.metrics %>%
+  ggplot(aes(x=complexity_diff, y=percent.Largest.Gene)) +
+  geom_point()
+p3
+ggsave(paste0(output_dir, "/complexitydiffbylargestgene.png"), p3, width = width, height = height, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/complexitydiffbylargestgene.svg"), p3, width = width, height = height, units = "in", dpi = 300)
+
+qc.metrics %>%
+  group_by(largest_gene) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n)) -> largest_gene_list
+
+largest_gene_list %>%
+  filter(n>140) %>%
+  pull(largest_gene) -> largest_genes_to_plot
+
+p4 <- qc.metrics %>%
+  filter(largest_gene %in% largest_genes_to_plot) %>%
+  mutate(largest_gene=factor(largest_gene, levels=largest_genes_to_plot)) %>%
+  arrange(largest_gene) %>%
+  ggplot(aes(x=log10(nCount_RNA), y=log10(nFeature_RNA), colour=largest_gene)) +
+  geom_point(size=1) +
+  scale_colour_manual(values=c("grey",rainbow(24)))
+p4
+ggsave(paste0(output_dir, "/largestgenes.png"), p4, width = width, height = height, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/largestgenes.svg"), p4, width = width, height = height, units = "in", dpi = 300)
+
+p5 <- qc.metrics %>%
+  filter(largest_gene %in% largest_genes_to_plot) %>%
+  mutate(largest_gene=factor(largest_gene, levels=largest_genes_to_plot)) %>%
+  arrange(largest_gene) %>%
+  ggplot(aes(x=complexity_diff, y=percent.Largest.Gene, colour=largest_gene)) +
+  geom_point()+
+  scale_colour_manual(values=c("grey",rainbow(24)))
+p5
+ggsave(paste0(output_dir, "/largestgenesbycomplexity.png"), p5, width = width, height = height, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/largestgenesbycomplexity.svg"), p5, width = width, height = height, units = "in", dpi = 300)
+
+p6 <- qc.metrics %>%
+  arrange(percent.Ribosomal) %>%
+  ggplot(aes(x=complexity_diff, y=percent.Largest.Gene, colour=percent.Ribosomal)) +
+  geom_point() +
+  scale_colour_gradient(low="grey", high="red2")
+p6
+ggsave(paste0(output_dir, "/percentlargestgenesbycomplexity.png"), p6, width = width, height = height, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/percentlargestgenesbycomplexity.svg"), p6, width = width, height = height, units = "in", dpi = 300)
+
+p7 <- qc.metrics %>%
+  ggplot(aes(percent.Largest.Gene)) + 
+  geom_histogram(binwidth = 0.7, fill="yellow", colour="black") +
+  ggtitle("Distribution of Percentage Largest Gene") +
+  geom_vline(xintercept = 10)
+p7
+ggsave(paste0(output_dir, "/percentagelargestgenedistribution.png"), p7, width = width, height = height, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/percentagelargestgenedistribution.svg"), p7, width = width, height = height, units = "in", dpi = 300)
+
+p10 <- as_tibble(newdata[[]]) %>%
+ggplot(aes(Phase)) + geom_bar()
+p10
+ggsave(paste0(output_dir, "/cellcycleplotbar.png"), p10, width = width, height = height, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/cellcycleplotbar.svg"), p10, width = width, height = height, units = "in", dpi = 300)
+
+p11 <- as_tibble(newdata[[]]) %>%
+ggplot(aes(x=S.Score, y=G2M.Score, color=Phase)) + 
+geom_point() +
+coord_cartesian(xlim=c(-0.15,0.15), ylim=c(-0.15,0.15))
+p11
+ggsave(paste0(output_dir, "/cellcycleplotscatter.png"), p11, width = width, height = height, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/cellcycleplotscatter.svg"), p11, width = width, height = height, units = "in", dpi = 300)
+
+# Obtain summary statistics for all metanewdata columns
+summary_stats <- lapply(qc.metrics, summary)
+summary_stats <- do.call(rbind, summary_stats)
+
+apply(newdata@assays$RNA@data,1,mean) -> gene.expression
+sort(gene.expression, decreasing = TRUE) -> gene.expression
+head(gene.expression, n=50)
+
+tibble(
+pc95 = apply(newdata[["RNA"]]@data,2,quantile,0.95),
+measured = apply(newdata[["RNA"]]@data,2,function(x)(100*sum(x!=0))/length(x))
+) -> normalisation.qc
+
+p8 <- normalisation.qc %>% 
+ggplot(aes(x=measured,y=pc95))+
+geom_point()+
+ggtitle("Normalisation of newdata")
+p8
+ggsave(paste0(output_dir, "/normalization.png"), p8, width = 10, height = 10, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/normalization.svg"), p8, width = 10, height = 10, units = "in", dpi = 300)
+
+p9 <- as_tibble(
+newdata@assays$RNA@data[,1:100]
+) %>%
+pivot_longer(
+cols=everything(),
+names_to="cell",
+values_to="expression"
+) %>%
+ggplot(aes(x=expression, group=cell)) +
+geom_density() +
+coord_cartesian(ylim=c(0,0.6), xlim=c(0,3))
+p9
+ggsave(paste0(output_dir, "/expressionpercell.png"), p9, width = width, height = height, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/expressionpercell.svg"), p9, width = width, height = height, units = "in", dpi = 300)
+
+all_variables <- ls()
+# Loop over the variables and delete any that are not the Seurat object
+for (variable in all_variables) {
+  if (variable != "newdata" & variable != "qps_genes" & variable != "nonqps_genes" 
+      & variable != "largest_genes_to_plot" & variable != "width" 
+      & variable != "height" & variable != "gene_labels" 
+      & variable !="output_dir") {
+    rm(list = variable)
+  }
+}
+rm(variable)
+rm(all_variables)
+```
+
+``` {r custom functions}
+
+CustomVariableFeaturePlot <- function(data, pt.size = 1, log = NULL, pseudovalue=NULL, raster = NULL, raster.dpi = c(512, 512)) {
+    hvf.info <- data[, c("avg_exp", "res_var", "color", "label")]
+    axis.labels <- c("Average Expression", "Standardized Variance")
+    log <- log %||% TRUE
+    pseudovalue <- pseudovalue %||% TRUE
+    if (pseudovalue) {
+        hvf.info$avg_exp <- hvf.info$avg_exp + 1e-6
+    }
+    plot <- SingleCorPlot(data = hvf.info, col.by = hvf.info$color, pt.size = pt.size, raster = raster, raster.dpi = raster.dpi)
+    plot <- plot + geom_text_repel(aes(label = label))
+    labels.legend <- c("red" = "Highly variable QP gene", "blue" = "Highly variable non-QP gene", "grey" = "Non-variable" )
+    colors.legend <- c("red" = "#CC0033", "blue" = "#0066CC","grey" = "#333333")
+    plot <- plot + scale_color_manual(values = colors.legend, labels = labels.legend)
+
+    
+    plot <- plot + labs(title = "Highly Variable Genes", x = axis.labels[1], y = axis.labels[2])
+    if (log) {
+        plot <- plot + scale_x_log10()
+    }
+    
+    plot <- plot + scale_y_continuous(breaks = seq(from = 0, to = ceiling(max(hvf.info$res_var)/100)*100, by = 100))
+        
+
+    return(plot)
+}
+```
+
+``` {r Plotting variance RNA}
+
+output_dir = "/finalanalysis/shiftedlog/varianceplots"
+
+
+# Create a list to store the plots
+plots <- list()
+
+# Get variable features
+var_features <- VariableFeatures(newdata)
+
+var_values = newdata[["RNA"]]@meta.features[var_features,"vst.variance.standardized"]
+# Create a new dataframe containing the variable features and their variance values
+dataplot <- data.frame(genes = var_features, variance = var_values)
+# Order the genes in descending order based on their mean expression value
+dataplot <- dataplot[order(dataplot$variance, decreasing = TRUE), ]
+# Identify the 20 most highly variable genes
+top20 <- head(dataplot$genes, 20)
+# Generate variable feature plot
+plot1 <- VariableFeaturePlot(newdata, cols = c("black", "red"))
+p1 <- LabelPoints(plot = plot1, points = top20, repel = TRUE) + ggtitle(paste("Highly Variable Genes"))
+p1
+# To extract the RNA assay data, you can use the 'GetAssayData' function
+RNA_data <- GetAssayData(newdata, assay = "RNA", slot = "data")
+# To calculate the mean expression for each gene, you can use the 'rowMeans' function
+mean_expr <- rowMeans(RNA_data)
+rm(RNA_data)
+# extract the matrix from the list
+gene_names <- names(mean_expr)
+# Get variance values
+var_values <- newdata[["RNA"]]@meta.features$vst.variance.standardized
+# create a data frame with gene names, geometric mean of expression, and residual variance
+dataplot <- data.frame(gene = gene_names, avg_exp =mean_expr, res_var = var_values)
+dataplot$color <- ifelse(dataplot$gene %in% qps_genes & dataplot$gene %in% head(newdata[["RNA"]]@var.features, 3000), "red",
+               ifelse(dataplot$gene %in% nonqps_genes & dataplot$gene %in% head(newdata[["RNA"]]@var.features, 3000), "blue", "grey"))
+# Order the genes in descending order based on their mean expression value
+dataplot <- dataplot[order(dataplot$res_var, decreasing = TRUE), ]
+# Update the label column in data
+dataplot$color <- as.factor(dataplot$color)
+dataplot$color <- factor(dataplot$color, levels = c("red", "blue", "grey"))
+dataplot$label <- ifelse(dataplot$gene %in% qps_genes & rank(-dataplot$res_var) <= 20, as.character(dataplot$gene), "")
+
+top_20_genes <- dataplot$gene[dataplot$gene %in% qps_genes & rank(-dataplot$res_var) <= 20]
+
+
+p2 = CustomVariableFeaturePlot(dataplot, pseudovalue=FALSE)
+p2
+
+ggsave(paste0(output_dir, "/varianceplot.png"), p2, width = width, height = height, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/varianceplot.svg"), p2, width = width, height = height, units = "in", dpi = 300)
+
+
+qps <- array(readLines("/data/hg38_QPs_genes_symbols.txt"))
+
+# create a list with the gene sets before and after filtering
+gene_sets <- list(
+  "Before Filtering" = qps,
+  "After Filtering" = qps_genes
+)
+
+all_variables <- ls()
+# Loop over the variables and delete any that are not the Seurat object
+for (variable in all_variables) {
+  if (variable != "newdata" & variable != "qps_genes"  & variable != "nonqps_genes" 
+      & variable != "width" & variable != "height" & variable != "gene_labels" 
+      & variable != "outputdir") {
+    rm(list = variable)
+  }
+}
+rm(variable)
+rm(all_variables)
+
+```
+
+```{r Differential Analysis}
+
+output_dir <- "/finalanalysis"
+
+newdata <- SetIdent(newdata, value = "subclass_label")
+
+# Run the FindAllMarkers function on all cell types
+cluster.markers2 = FindAllMarkers(newdata, assay="RNA", features = qps_genes, logfc.threshold = 1, min.pct = 0.25)
+
+# Save the data
+saveRDS(cluster.markers2, paste0(output_dir, "/differentialexpressionresults2.rds"))
+
+
+# Load in Quasi-prime associated genes
+qps <- array(readLines("/data/hg38_QPs_genes_symbols.txt"))
+
+
+```
+
+``` {r DE}
+
+output_dir <- "/finalanalysis"
+
+cluster.markers2 <- readRDS(file = paste0(output_dir,"/differentialexpressionresults2.rds"))
+
+
+```
+
+``` {r plotting DE logtransform}
+output_dir = "/finalanalysis/shiftedlog/diffexpression"
+
+library(reticulate)
+conda_list()
+
+# need to do for each cell type
+# Get the unique cluster IDs
+clusters <- unique(cluster.markers2$cluster)
+# Iterate through each cluster and create a volcano plot
+for (cluster in clusters) {
+  # Subset the markers for the current cluster
+  cluster.markers <- cluster.markers2[cluster.markers2$cluster == cluster, ]
+  # Create the volcano plot
+  p = EnhancedVolcano(cluster.markers,
+    lab = rownames(cluster.markers),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    pCutoff = 10e-16,
+    FCcutoff = 1.5,
+    pointSize = 3.0,
+    labSize = 5.0,
+    col=c('black', 'black', 'black', 'red3'),
+    colAlpha = 1,
+    xlab = bquote(~Log[2]~ 'fold change'),
+    labCol = 'black',
+    labFace = 'bold',
+    boxedLabels = TRUE,
+    legendPosition = 'right',
+    legendLabSize = 10,
+    legendIconSize = 4.0,
+    drawConnectors = TRUE,
+    widthConnectors = 1.0,
+    colConnectors = 'black')
+  
+    # Replace forward slashes with underscores in the cluster name
+    filename <- paste0(gsub("/", "_", cluster), "_volcanoplotofDEanalysis", sep="")
+
+    ggsave(filename=paste0(output_dir,"/",filename,".png"),plot=p,height=10,width=15,units="in",dpi=300)
+    ggsave(filename=paste0(output_dir,"/",filename,".svg"),plot=p,height=10,width=15,units="in",dpi=300)
+}
+
+
+# Filtering DE analysis
+
+cluster.markers2 <- subset(cluster.markers2, p_val_adj<.05)
+mostsiggenes = cluster.markers2 %>% group_by(cluster) %>% slice_min(order_by = p_val_adj)
+
+positivelogfoldchange = subset(mostsiggenes, avg_log2FC>0)
+negativelogfoldchange = subset(mostsiggenes, avg_log2FC<0)
+
+clusterposgenes = positivelogfoldchange %>% group_by(cluster) %>% slice_max(order_by = avg_log2FC, n = 3) 
+clusterneggenes = negativelogfoldchange %>% group_by(cluster) %>% slice_min(order_by = avg_log2FC, n = 3) 
+
+posfeatures = c(unique(clusterposgenes$gene))
+negfeatures = c(unique(clusterneggenes$gene))
+
+combined_data <- bind_rows(clusterposgenes, clusterneggenes)
+
+# Create a sorted geneList vector
+geneList <- combined_data %>%
+  arrange(desc(avg_log2FC)) %>%
+  pull(avg_log2FC) %>%
+  setNames(combined_data$gene)
+
+### plotting
+
+# Create a list to store the plots
+plots <- list()
+
+counter = 1
+# Ridge plots - from ggridges. Visualize single cell expression distributions in each cluster
+p1 = RidgePlot(newdata, features = posfeatures, ncol = 6)
+plots[[counter]] <- p1
+counter <- counter + 1
+
+# Ridge plots - from ggridges. Visualize single cell expression distributions in each cluster
+p2 = RidgePlot(newdata, features = negfeatures, ncol = 6)
+plots[[counter]] <- p2
+counter <- counter + 1
+
+# Violin plot - Visualize single cell expression distributions in each cluster
+p3 = VlnPlot(newdata, features = posfeatures, ncol = 6)
+plots[[counter]] <- p3
+counter <- counter + 1
+
+# Violin plot - Visualize single cell expression distributions in each cluster
+p4 = VlnPlot(newdata, features = negfeatures,  ncol = 6)
+plots[[counter]] <- p4
+counter <- counter + 1
+
+# Feature plot - visualize feature expression in low-dimensional space
+p5 = FeaturePlot(newdata, features = posfeatures, ncol = 6)
+plots[[counter]] <- p5
+counter <- counter + 1
+
+# Feature plot - visualize feature expression in low-dimensional space
+p6 = FeaturePlot(newdata, features = negfeatures, ncol = 6)
+plots[[counter]] <- p6
+counter <- counter + 1
+
+# Dot plots - the size of the dot corresponds to the percentage of cells expressing the
+# feature in each cluster. The color represents the average expression level
+p7 = DotPlot(newdata, features = posfeatures) + RotatedAxis()
+plots[[counter]] <- p7
+counter <- counter + 1
+
+# Dot plots - the size of the dot corresponds to the percentage of cells expressing the
+# feature in each cluster. The color represents the average expression level
+p8 = DotPlot(newdata, features = negfeatures) + RotatedAxis()
+plots[[counter]] <- p8
+counter <- counter + 1
+
+clusterposgenes = positivelogfoldchange %>% group_by(cluster) %>% slice_max(order_by = avg_log2FC, n = 10) 
+clusterneggenes = negativelogfoldchange %>% group_by(cluster) %>% slice_min(order_by = avg_log2FC, n = 10) 
+
+posfeatures = c(unique(clusterposgenes$gene))
+negfeatures = c(unique(clusterneggenes$gene))
+
+# Single cell heatmap of feature expression
+p9 = DoHeatmap(subset(newdata, downsample = 1000), features = posfeatures, angle=90)
+plots[[counter]] <- p9
+counter <- counter + 1
+
+# Single cell heatmap of feature expression
+p10 = DoHeatmap(subset(newdata, downsample = 1000), features = negfeatures, angle=90)
+plots[[counter]] <- p10
+counter <- counter + 1
+
+# DoHeatmap now shows a grouping bar, splitting the heatmap into groups or clusters. This can be changed with the `group.by` parameter
+p11 = DoHeatmap(newdata, features = posfeatures,angle = 90) 
+plots[[counter]] <- p11
+counter <- counter + 1
+
+# DoHeatmap now shows a grouping bar, splitting the heatmap into groups or clusters. This can be changed with the `group.by` parameter
+p12 = DoHeatmap(newdata, features = negfeatures,angle = 90) 
+plots[[counter]] <- p12
+counter <- counter + 1
+
+p13 = DoHeatmap(subset(newdata, downsample = 1000), features = c(posfeatures,negfeatures),  angle = 45)
+plots[[counter]] <- p13
+counter=counter+1
+
+cluster.markers2 %>%
+  group_by(cluster) %>%
+  filter(row_number() <= 1) %>%
+  pull(gene) -> best.wilcox.gene.per.cluster
+
+# check if the genes in best.wilcox.gene.per.cluster are present in the data object
+all(best.wilcox.gene.per.cluster %in% rownames(newdata))
+
+best.wilcox.gene.per.cluster = unique(best.wilcox.gene.per.cluster)
+
+p14 = VlnPlot(newdata, features = best.wilcox.gene.per.cluster, group.by = "subclass_label")
+plots[[counter]] <- p14
+counter=counter+1
+
+p15 = FeaturePlot(newdata,features=best.wilcox.gene.per.cluster)
+plots[[counter]] = p15
+counter=counter+1
+
+# Ridge plots - from ggridges. Visualize single cell expression distributions in each cluster
+p16 = RidgePlot(newdata, features = best.wilcox.gene.per.cluster)
+plots[[counter]] <- p16
+counter <- counter + 1
+
+p17 = DotPlot(newdata, features = best.wilcox.gene.per.cluster) + RotatedAxis()
+plots[[counter]] <- p17
+counter <- counter + 1
+
+n <- length(plots)
+
+# Loop over the indices of the plots list
+for (i in 1:n) {
+  p <- plots[[i]]
+  ggsave(paste0(output_dir, "/differentialexpression:", i, ".png"), p, width = 20, height = 25, units = "in", dpi = 300)
+  ggsave(paste0(output_dir, "/differentialexpression:", i, ".svg"), p, width = 20, height = 25, units = "in", dpi = 300)
+}
+
+all_variables <- ls()
+# Loop over the variables and delete any that are not the Seurat object
+for (variable in all_variables) {
+  if (variable != "newdata" & variable != "qps_genes"  & variable != "nonqps_genes" 
+      & variable != "width" & variable != "height" & variable != "cluster.markers2" 
+      & variable != "cluster.markers2" & variable != "posfeatures" & variable != "negfeatures" 
+      & variable != "output_dir" & variable != "geneList") {
+    rm(list = variable)
+  }
+}
+rm(all_variables)
+rm(variable)
+
+
+```
+
+``` {r GO and KEGG on logtransform}
+
+output_dir = "/finalanalysis/shiftedlog/ora"
+
+
+# Create a list to store the plots
+plots <- list()
+counter = 1
+
+########################
+
+#cluster.markers21 <- subset(cluster.markers2, abs(avg_log2FC) > 2)
+cluster.markers21 = cluster.markers2
+
+mart <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+entrez_ids <- getBM(filters = "hgnc_symbol", attributes = c("entrezgene_id","hgnc_symbol"), values = cluster.markers21$gene, mart = mart)
+
+
+cluster.markers21$othergroup <- ifelse(cluster.markers21$avg_log2FC > 0, "Upregulated Genes", "Downregulated Genes")
+mydf <- merge(x = cluster.markers21, y = entrez_ids, by.x = "gene", by.y = "hgnc_symbol")
+mydf <- mydf[,c("entrezgene_id", "avg_log2FC", "cluster", "othergroup")]
+names(mydf) <- c("Entrez", "logFC", "group", "othergroup")
+
+# Count the number of NAs in the mydf$Entrez column
+num_NAs <- sum(is.na(mydf$Entrez))
+print(num_NAs)
+# Remove rows with NAs in the mydf$Entrez column
+mydf <- mydf[!is.na(mydf$Entrez), ]
+
+# Assuming your newdata frame is named 'df'
+mydf <- mydf %>%
+  group_by(group) %>%
+  arrange(desc(logFC)) 
+
+####### ORA #######
+
+enGO <- compareCluster(Entrez~group+othergroup, data=mydf,fun='enrichGO', 
+                       OrgDb='org.Hs.eg.db',pvalueCutoff=0.005)
+enGO <- setReadable(enGO, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+enKEGG <- compareCluster(Entrez~group+othergroup, data=mydf, fun="enrichKEGG",
+                         pvalueCutoff=0.005, minGSSize = 3,maxGSSize = 800)
+enKEGG <- setReadable(enKEGG, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+enDO <- compareCluster(Entrez~group+othergroup, fun = "enrichDO", data=mydf,
+                       pvalueCutoff=0.005, minGSSize = 3,maxGSSize = 800)
+enMKEGG = compareCluster(Entrez~group+othergroup, fun = "enrichMKEGG", data=mydf,
+                         organism="hsa", pvalueCutoff=0.05, minGSSize = 3, 
+                         maxGSSize = 800)
+enMKEGG <- setReadable(enMKEGG, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+enDGN = compareCluster(Entrez~group+othergroup, fun = "enrichDGN", data=mydf,
+                        pvalueCutoff=0.005, minGSSize = 3, maxGSSize = 800)
+
+###################
+
+p1 = dotplot(enGO, x="group", color = "p.adjust", showCategory=20,title=paste("Human Gene Ontology ORA"),label_format = function(x) stringr::str_wrap(x, width=40)) + 
+  ggplot2::facet_grid(~othergroup)
+ggsave(paste0(output_dir, "/ora:dotGO2.png"), p1, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/ora:dotGO2.svg"), p1, width = 15, height = 25, units = "in", dpi = 300)
+
+p2 = dotplot(enKEGG, x="group", color = "p.adjust",showCategory=20, split=".sign", title=paste("Human KEGG ORA"),label_format = function(x) stringr::str_wrap(x, width=40)) +
+  ggplot2::facet_grid(~othergroup)
+ggsave(paste0(output_dir, "/ora:dotKEGG2.png"), p2, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/ora:dotKEGG2.svg"), p2, width = 15, height = 25, units = "in", dpi = 300)
+
+p3 = dotplot(enDO, x="group", color = "p.adjust", showCategory=20, split=".sign", title=paste("Human Disease Ontology ORA"),label_format = function(x) stringr::str_wrap(x, width=40)) +
+  ggplot2::facet_grid(~othergroup)
+ggsave(paste0(output_dir, "/ora:dotDO2.png"), p3, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/ora:dotDO2.svg"), p3, width = 15, height = 25, units = "in", dpi = 300)
+
+p4 = dotplot(enMKEGG, x="group", color = "p.adjust", showCategory=20, split=".sign", title=paste("Human MKEGG ORA"),label_format = function(x) stringr::str_wrap(x, width=40)) +
+  ggplot2::facet_grid(~othergroup)
+ggsave(paste0(output_dir, "/ora:dotMKEGG2.png"), p4, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/ora:dotMKEGG2.svg"), p4, width = 15, height = 25, units = "in", dpi = 300)
+
+p10 = dotplot(enDGN, x="group", color = "p.adjust", showCategory=20, split=".sign", title=paste("Human DisGeNET ORA"),label_format = function(x) stringr::str_wrap(x, width=40)) +
+  ggplot2::facet_grid(~othergroup)
+ggsave(paste0(output_dir, "/ora:dotDGN2.png"), p10, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/ora:dotDGN2.svg"), p10, width = 15, height = 25, units = "in", dpi = 300)
+
+p5 =  cnetplot(enGO, categorySize="p.adjust")
+ggsave(paste0(output_dir, "/ora:cnetGO2.png"), p5, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/ora:cnetGO2.svg"), p5, width = 15, height = 25, units = "in", dpi = 300)
+p6 = cnetplot(enKEGG, categorySize="p.adjust")
+ggsave(paste0(output_dir, "/ora:cnetKEGG2.png"), p6, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/ora:cnetKEGG2.svg"), p6, width = 15, height = 25, units = "in", dpi = 300)
+p7 = cnetplot(enMKEGG, categorySize="p.adjust")
+ggsave(paste0(output_dir, "/ora:cnetMKEGG2.png"), p7, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/ora:cnetMKEGG2.svg"), p7, width = 15, height = 25, units = "in", dpi = 300)
+p8 = cnetplot(enMKEGG, categorySize="p.adjust", circular = TRUE, colorEdge = TRUE) 
+ggsave(paste0(output_dir, "/ora:cnetcircleMKEGG2.png"), p8, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/ora:cnetcircleMKEGG2.svg"), p8, width = 15, height = 25, units = "in", dpi = 300)
+p9 = cnetplot(enDO, categorySize="p.adjust")
+ggsave(paste0(output_dir, "/ora:cnetDO2.png"), p9, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/ora:cnetDO2.svg"), p9, width = 15, height = 25, units = "in", dpi = 300)
+p11 = cnetplot(enDGN, categorySize="p.adjust")
+ggsave(paste0(output_dir, "/ora:cnetDGN2.png"), p11, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/ora:cnetDGN2.svg"), p11, width = 15, height = 25, units = "in", dpi = 300)
+
+
+output_dir = "/finalanalysis/shiftedlog/gsea"
+########### GSEA ###############
+
+# Create a list to store the plots
+plots <- list()
+counter = 1
+
+mart <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+entrez_ids <- getBM(filters = "hgnc_symbol", attributes = c("entrezgene_id","hgnc_symbol"), values = cluster.markers2$gene, mart = mart)
+
+mydf <- merge(x = cluster.markers2, y = entrez_ids, by.x = "gene", by.y = "hgnc_symbol")
+mydf <- mydf[,c("entrezgene_id", "avg_log2FC", "cluster")]
+names(mydf) <- c("Entrez", "logFC", "group")
+
+# Count the number of NAs in the mydf$Entrez column
+num_NAs <- sum(is.na(mydf$Entrez))
+
+# Remove rows with NAs in the mydf$Entrez column
+mydf <- mydf[!is.na(mydf$Entrez), ]
+
+# Assuming your newdata frame is named 'df'
+mydf <- mydf %>%
+  group_by(group) %>%
+  arrange(desc(logFC)) 
+
+# get unique values of column
+unique_values <- unique(mydf$group)
+
+# create list of newdata frames split by unique values of column
+split_dfs <- lapply(unique_values, function(x) mydf[mydf$group == x, ])
+
+cell1 = split_dfs[[1]]
+cell2 = split_dfs[[2]]
+cell3 = split_dfs[[3]]
+cell4 = split_dfs[[4]]
+cell5 = split_dfs[[5]]
+cell6 = split_dfs[[6]]
+cell7 = split_dfs[[7]]
+cell8 = split_dfs[[8]]
+cell9 = split_dfs[[9]]
+cell10 = split_dfs[[10]]
+cell11 = split_dfs[[11]]
+cell12 = split_dfs[[12]]
+cell13 = split_dfs[[13]]
+cell14 = split_dfs[[14]]
+cell15 = split_dfs[[15]]
+cell16 = split_dfs[[16]]
+cell17 = split_dfs[[17]]
+cell18 = split_dfs[[18]]
+cell19 = split_dfs[[19]]
+cell20 = split_dfs[[20]]
+
+mydf2 <- data.frame(Entrez = c(cell1$Entrez,
+                               cell2$Entrez,
+                               cell3$Entrez,
+                               cell4$Entrez,
+                               cell5$Entrez,
+                               cell6$Entrez,
+                               cell7$Entrez,
+                               cell8$Entrez,
+                               cell9$Entrez,
+                               cell10$Entrez,
+                               cell11$Entrez,
+                               cell12$Entrez,
+                               cell13$Entrez,
+                               cell14$Entrez,
+                               cell15$Entrez,
+                               cell16$Entrez,
+                               cell17$Entrez,
+                               cell18$Entrez,
+                               cell19$Entrez,
+                               cell20$Entrez),
+                    logFC = c(cell1$logFC,
+                               cell2$logFC,
+                               cell3$logFC,
+                               cell4$logFC,
+                               cell5$logFC,
+                               cell6$logFC,
+                               cell7$logFC,
+                               cell8$logFC,
+                               cell9$logFC,
+                               cell10$logFC,
+                               cell11$logFC,
+                               cell12$logFC,
+                               cell13$logFC,
+                               cell14$logFC,
+                               cell15$logFC,
+                               cell16$logFC,
+                               cell17$logFC,
+                               cell18$logFC,
+                               cell19$logFC,
+                               cell20$logFC),
+                    group = c(cell1$group,
+                               cell2$group,
+                               cell3$group,
+                               cell4$group,
+                               cell5$group,
+                               cell6$group,
+                               cell7$group,
+                               cell8$group,
+                               cell9$group,
+                               cell10$group,
+                               cell11$group,
+                               cell12$group,
+                               cell13$group,
+                               cell14$group,
+                               cell15$group,
+                               cell16$group,
+                               cell17$group,
+                               cell18$group,
+                               cell19$group,
+                               cell20$group)) 
+
+BP <- godata('org.Hs.eg.db', ont="BP")
+
+gseGO <- compareCluster(Entrez|logFC~group, data=mydf2,fun='gseGO',OrgDb='org.Hs.eg.db', seed=TRUE,minGSSize = 3,maxGSSize = 800, eps=0, pvalueCutoff=0.01)
+gseGO <- pairwise_termsim(gseGO, semData = BP, method = "Wang")
+gseGO <- setReadable(gseGO, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+gseKEGG <- compareCluster(Entrez|logFC~group, data=mydf2,fun='gseKEGG', seed=TRUE, minGSSize = 3,maxGSSize = 800, eps=0)
+gseKEGG <- setReadable(gseKEGG, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+gseDO <- compareCluster(Entrez|logFC~group, data=mydf2,fun='gseDO', seed=TRUE, minGSSize = 3,maxGSSize = 800, eps=0, pvalueCutoff=0.01)
+gseDO <- setReadable(gseDO, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+gseDGN <- compareCluster(Entrez|logFC~group, data=mydf2,fun='gseDGN', seed=TRUE, minGSSize = 3,maxGSSize = 800, eps=0, pvalueCutoff=0.01)
+gseDGN <- setReadable(gseDGN, OrgDb = org.Hs.eg.db, keyType="ENTREZID")
+
+##########################
+
+p10 = dotplot(gseGO, x="group", color = "p.adjust", showCategory=20,title=paste("Human Gene Ontology Gene Set Enrichment Analysis"),label_format = function(x) stringr::str_wrap(x, width=60), split=".sign") + facet_grid(.~.sign) + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+ggsave(paste0(output_dir, "/gsea:dotGO.png"), p10, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/gsea:dotGO.svg"), p10, width = 15, height = 25, units = "in", dpi = 300)
+
+p11 = dotplot(gseKEGG, x="group", color = "p.adjust", showCategory=20,title=paste("Human KEGG Gene Set Enrichment Analysis"),label_format = function(x) stringr::str_wrap(x, width=40), split=".sign") + facet_grid(.~.sign) + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+ggsave(paste0(output_dir, "/gsea:dotKEGG.png"), p11, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/gsea:dotKEGG.svg"), p11, width = 15, height = 25, units = "in", dpi = 300)
+
+p12 = dotplot(gseDO, x="group", color = "p.adjust", showCategory=20,title=paste("Human Disease Ontology Gene Set Enrichment Analysis"),label_format = function(x) stringr::str_wrap(x, width=60), split=".sign") + facet_grid(.~.sign) + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+ggsave(paste0(output_dir, "/gsea:dotDO.png"), p12, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/gsea:dotDO.svg"), p12, width = 15, height = 25, units = "in", dpi = 300)
+
+p18 = dotplot(gseDGN, x="group", color = "p.adjust", showCategory=20,title=paste("Human DisGeNET Gene Set Enrichment Analysis"),label_format = function(x) stringr::str_wrap(x, width=60), split=".sign") + facet_grid(.~.sign) + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+ggsave(paste0(output_dir, "/gsea:dotDGN.png"), p18, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/gsea:dotDGN.svg"), p18, width = 15, height = 25, units = "in", dpi = 300)
+
+
+p13 =  cnetplot(gseGO, categorySize="p.adjust")
+ggsave(paste0(output_dir, "/gsea:cnetGO.png"), p13, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/gsea:cnetGO.svg"), p13, width = 15, height = 25, units = "in", dpi = 300)
+p14= cnetplot(gseKEGG, categorySize="p.adjust")
+ggsave(paste0(output_dir, "/gsea:cnetKEGG.png"), p14, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/gsea:cnetKEGG.svg"), p14, width = 15, height = 25, units = "in", dpi = 300)
+p15= cnetplot(gseKEGG, categorySize="p.adjust", circular = TRUE, colorEdge = TRUE) 
+ggsave(paste0(output_dir, "/gsea:cnetcircleKEGG.png"), p15, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/gsea:cnetcircleKEGG.svg"), p15, width = 15, height = 25, units = "in", dpi = 300)
+p16= cnetplot(gseDO, categorySize="p.adjust")
+ggsave(paste0(output_dir, "/gsea:cnetDO.png"), p16, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/gsea:cnetDO.svg"), p16, width = 15, height = 25, units = "in", dpi = 300)
+p19= cnetplot(gseDGN, categorySize="p.adjust")
+ggsave(paste0(output_dir, "/gsea:cnetDGN.png"), p19, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/gsea:cnetDGN.svg"), p19, width = 15, height = 25, units = "in", dpi = 300)
+
+p17=  emapplot(gseGO, group_category = TRUE, node_label = "group", with_edge = TRUE, showCategory = 20, title=paste("Human Gene Ontology Gene Set Enrichment Analysis: BP"))
+ggsave(paste0(output_dir, "/gsea:emapGO.png"), p17, width = 15, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/gsea:emapGO.svg"), p17, width = 15, height = 25, units = "in", dpi = 300)
+
+###################################
+
+all_variables <- ls()
+# Loop over the variables and delete any that are not the Seurat object
+for (variable in all_variables) {
+  if (variable != "newdata" & variable != "qps_genes"  & variable != "nonqps_genes" 
+      & variable != "width" & variable != "height" & variable != "cluster.markers2" 
+      & variable != "cluster.markers21" & variable != "output_dir" 
+      & variable != "geneList") {
+    rm(list = variable)
+  }
+}
+rm(all_variables)
+rm(variable)
+
+```
+
+
+``` {r DisGeNET key}
+
+qps <- array(readLines("/data/hg38_QPs_genes_symbols.txt"))
+
+#https://www.disgenet.org/static/disgenet2r/disgenet2r.html
+
+# keys
+disgenet_api_key = get_disgenet_api_key("mak6930@psu.edu","Chocolatey0!")
+Sys.setenv(DISGENET_API_KEY= disgenet_api_key)
+
+cluster.markers21$gene = toupper(cluster.markers21$gene)
+cluster.markers2$gene = toupper(cluster.markers2$gene)
+
+```
+
+
+``` {r UMLS}
+
+path <- "/data/MRCONSO.RRF"
+#https://www.nlm.nih.gov/research/umls/new_users/glossary.html
+#https://www.ncbi.nlm.nih.gov/books/NBK9685/table/ch03.T.concept_names_and_sources_file_mr/
+
+conso<-read.delim(file = path, sep='|',header = F, stringsAsFactors=F)
+
+conso = as.data.frame(conso)
+colnames(conso) = c("CUI", "LAT", "TS", "LUI", "STT", "SUI", "ISPREF", "AUI",
+                    "SAUI", "SCUI", "SDUI", "SAB", "TTY", "CODE", "STR", "SRL", 
+                    "SUPPRESS","CVF", "RM")
+conso = conso[,-c(18,19)]
+
+consofiltered = conso[conso$LAT == "ENG",]
+consofiltered = consofiltered[consofiltered$SAB == "MSH",]
+consofiltered = consofiltered[!duplicated(consofiltered[c('CUI')]), ]
+consofiltered = consofiltered[consofiltered$TTY != "CD",]
+
+consofiltered2 <- subset(consofiltered, !grepl("[^[:alpha:][:space:]]", STR))
+consofiltered2$STR <- tolower(consofiltered2$STR)
+consofiltered3 <- subset(consofiltered2, grepl("disease|disorder|cancer|neoplasm|mental|genetic|drug|neurologic|brain|health|cognitive|intelligence|addiction|dementia|disability|hereditary|development|deficiency|condition|itis|infection|ability|microbiome|microbiota|pneumonia|cirrhosis|fibrosis|acquired|resistant|syndrome|degeneration|pathology|pathologic|behavior|psych|dysfunction|abnormal|virus|bacteria|motor|paralysis|defect|human", STR))
+
+
+removeddiseaseswithindisgenetduetolowhits = c("C2718067","C4083212","C4080064","C3159311","C2986691","C2733158","C4082301","C0011849","C3665488","C2985290","C3179194","C2930618","C2931171","C2930619","C2718304","C2931320","C3489704","C0001849","C0001403","C0268124","C0001624","C0814154","C0270726","C2713546","C0154681","C0263429","C0085548","C0004930","C0005396","C0005426","C0005779","C0005940","C0005956","C1527311","C0936247","C1527348","C0007786","C0677866","C0936261","C0006145","C0553730","C0238301","C0007222","C0007302","C0007570","C0007760","C1563697","C0266929","C0008780","C0268568","C0009782","C0010034","C0022336","C0524611","C1691228","C0268418","C0011303","C1959620","C0036875","C0027654","C1449718","C0154832","C0270763","C1720887","C1527396","C0559031","C0017168","C0017178","C0017185","C0017332","C0919532","C0017658","C0271742","C0018213","C0018500","C0260662","C0018799","C0079487","C0376545","C0376544","C1527352","C0677776","C0015306","C0238339","C0268581","C0020179","C0017661","C0162538","C0021390","C0333355","C0268569","C0158252","C0022682","C0023015","C0023264","C0024143","C0279530","C0153452","C0685938","C0153594","C0153504","C0024689","C0024694","C0024776","C0024950","C0025063","C0025281","C0025289","C0025309","C0004936","C0796159","C0920269","C1704423","C0085084","C0026654","C0027022","C0027439","C0520459","C0085396","C0154874","C0376384","C0266526","C0524662","C1568868","C0029401","C0029410","C0029882","C0030167","C0030305","C0030319","C0030846","C0031099","C0031149","C0282528","C0031036","C0022680","C0949804","C0268379","C0034341","C0007113","C0034885","C0239998","C0035242","C0035243","C0035309","C0035333","C0035455","C0205713","C0525046","C0242013","C0036503","C0030569","C0338462","C0338630","C0085110","C0036902","C1318973","C0271093","C2711227","C0038987","C0264939","C0039494","C0039590","C0039978","C0039981)","C0040128","C0153567","C0243010","C0796063","C0948089","C1567741","C2931788","C0004930","C2986691","C2986691","C0007222","C1623038","C1302995","C1384514","C0011849","C4721952","C2931104","C1800706","C1608393","C1303073","C2745997","C1623209","C2700553","C1970431","C1959582","C3661483","C2748572","C2936694","C2940786","C4721509","C2931296","C0268443","C0796147","C0796280","C0796206","C0004943","C0796232","C0263428","C0795907","C0553586","C0795905","C0243050","C0265342","C0007852","C0000768","C0151491","C0587248","C0265233","C0010481","C0010674","C0795934","C0265344","C0013261","C0553980","C0272126","C0206368","C0016667","C0795949","C0040517","C0272302","C0162739","C0085786","C0022104","C0022360","C0162809","C0175704","C0265269","C0162671","C0024586","C0024796","C0796037","C0524620","C0473586","C0026691","C0265261","C0086666","NeurobehavioralManifestations","C0796095","C0796250","C0027686","C0001815","C0796121","C0268301","C0035258","C0035372","C0265341","C0265205","C0265222","C0175693","C0796149","C0272170","C0282492","C0263859","C0796179","C0080218","C0039981","C0040427","C0265325","C0041408","C0271097","C0175697","C0242973","C0265210","C0265239","C3146244","C4083212","C2986691","C4273131","C1389016","C0018817","C1389018","C0018816","C0018818")
+
+consofiltered3 = consofiltered3[!consofiltered3$CUI %in% removeddiseaseswithindisgenetduetolowhits,]
+
+contained_rows <- apply(consofiltered3, 1, function(x) {
+  row_index <- which(consofiltered3$STR == x["STR"])
+  any(grepl(x["STR"], consofiltered3$STR[-row_index]))
+})
+summary(contained_rows)
+#consofiltered3$STR[!contained_rows]
+#consofiltered3 <- consofiltered3[!contained_rows, ]
+
+columnstokeep = c("CUI")
+consonum = consofiltered3[, columnstokeep]
+
+diseasesOfInterest <- c(
+  
+                        #selected
+                        "C0036341","C0023467","C0002395","C0005586","C3714756",
+                        "C0026998", "C0014544","C0002736", "C0030567", "C0036572",
+                        "C1535926", "C1510586", "C0004352","C0557874", "C0023418",
+                        "C0011581","C0011570", "C1535926", "C0013146", "C0001973",
+                        "C0003873","C0027765", "C0021053", "C0751872", "C0014130",
+                        "C0004930",
+                        
+                        #disease classes
+                        "C0024115", "C0011570", "C0011849", "C0007222", "C0007820",
+                        "C0020538", "C0015397", "C0242383", "C0029456", "C0006826",
+                        "C4083212",
+                        
+                        #human specific diseases
+                        "C0019163", "C0021400", "C0025007", "C0043167", "C0035869",
+                        "C0039128", "C0039614", "C0041296", "C0001175", "C0041234",
+                        "C0008354","C0019104", "C0011311", "C0041228", "C0024537",
+                        "C0024535", "C0024530", "C0024534", "C0023290", "C1301422",
+                        "C0026780", "C0032064", "C0035920", "C0037354", "C0041466",
+                        "C0041471", "C0043395", "C0035235", "C0035473", "C0001487",
+                        "C0010823", "C0155862", "C0032371", "C0010246", "C0019348",
+                        "C0036439", "C0410702", "C1837461"
+                        
+                        )
+diseasesOfInterest = c(consonum, diseasesOfInterest)
+diseasesOfInterest = as.data.frame(diseasesOfInterest)
+diseasesOfInterest = diseasesOfInterest[!duplicated(diseasesOfInterest), ]
+
+removingdiseasesnotindisgenet=c("C0000735","C0001163","C0001198","C0001314","C0001576","C0001752","C0001753","C0001940","C0002016","C0002017","C0002757","C0004992","C0005424","C0005591","C0005717","C0005830","C0005887","C0005943","C0006008","C0006012","C0006023","C0006024","C0006034","C0006075","C0006181","C0006264","C0006325","C0006542","C0006705","C0007093","C0007350","C0007361","C0007453","C0007527","C0007670","C0007762","C0007774","C0007798","C0007867","C0007868","C0008043","C0008066","C0008087","C0008090","C0008521","C0008523","C0008679","C0008868","C0009761","C0009792","C0009946","C0010105","C0010266","C0010267","C0010362","C0010598","C0011119","C0011156","C0011405","C0013289","C0013291","C0013369","C0013449","C0013605","C0014858","C0015231","C0016632","C0016896","C0016977","C0017083","C0017155","C0017411","C0017417","C0017563","C0017570","C0018018","C0018050","C0018572","C0018809","C0018835","C0018852","C0018854","C0020000","C0020627","C0020655","C0020659","C0020732","C0020875","C0020876","C0021070","C0021071","C0021280","C0021338","C0021432","C0022078","C0022079","C0022362","C0022364","C0022373","C0022374","C0022681","C0022765","C0022810","C0022811","C0022890","C0022927","C0022976","C0023051","C0023364","C0023760","C0023761","C0023788","C0024198","C0024228","C0024788","C0024793","C0024958","C0025061","C0025284","C0025345","C0025470","C0026773","C0026857","C0026946","C0027345","C0027346","C0027402","C0027438","C0027625","C0027642","C0027644","C0027646","C0027648","C0027652","C0027653","C0027656","C0027657","C0027663","C0027664","C0027665","C0027667","C0027668","C0029376","C0029405","C0029412","C0029436","C0029438","C0029896","C0029897","C0030185","C0030186","C0030215","C0030469","C0030470","C0030477","C0030482","C0030499","C0030500","C0030517","C0030568","C0030579","C0030581","C0030631","C0030793","C0030975","C0031028","C0031118","C0031142","C0031345","C0031572","C0031707","C0034072","C0034124","C0034882","C0034995","C0035012","C0035127","C0035244","C0035352","C0035357","C0035358","C0035435","C0035439","C0035699","C0036472","C0036502","C0036903","C0036916","C0036917","C0036918","C0036946","C0038557","C0038558","C0038986","C0039006","C0039010","C0001559","C0002455","C0006104","C0006105","C0006106","C0006107","C0006110","C0006115","C0006117","C0006121","C0006122","C0006827","C0006828","C0013201","C0013202","C0013210","C0013211","C0013215","C0013218","C0013220","C0013223","C0013230","C0015320","C0020895","C0020896","C0021909","C0024622","C0024885","C0025055","C0025352","C0025354","C0025355","C0025360","C0025361","C0025364","C0025365","C0031327","C0034770","C0035507","C0039726","C0040336","C0040409","C0040422","C0040469","C0040580","C0040582","C0041182","C0041234","C0041697")
+
+removingdiseasesnotindisgenet2=c("C0079036","C0079161","C0079173","C0079319","C0079822","C0080159","C0080276","C0085078","C0085104","C0085123","C0085285","C0085421","C0085425","C0085854","C0085916","C0086181","C0086185","C0086187","C0086188","C0086190","C0086272","C0086455","C0086464","C0086640","C0153340","C0153398","C0153427","C0153436","C0153640","C0154575","C0158328","C0162692","C0162693","C0162694","C0162695","C0162696","C0162778","C0162812","C0175166","C0175405","C0178298","C0185527","C0203860","C0205986","C0206176","C0206410","C0242172","C0242354","C0243014","C0243015","C0243083","C0243085","C0243087","C0257306","C0259849","C0260205","C0262306","C0262935","C0263382","C0265249","C0267792","C0268095","C0268147","C0268479","C0270611","C0270876","C0270877","C0271073","C0271355","C0272229","C0272945","C0277550","C0282166","C0282504","C0282606","C0282607","C0296649","C0302825","C0304227","C0310744","C0314657","C0315227","C0333497","C0375071","C0376415","C0376438","C0376527","C0376623","C0376636","C0376659","C0376696","C0448011","C0451306","C0493762","C0494827","C0496779","C0496836","C0520468","C0520676","C0520688","C0521542","C0522182","C0524527","C0524801","C0524802","C0525042","C0525043","C0525047","C0533171","C0556449","C0581388","C0596240","C0597505","C0678236","C0678909","C0682735","C0683416","C0684743","C0687133","C0687707","C0795895","C0796001","C0796010","C0796125","C0796453","C0850624","C0887920","C0887922","C0887923","C0887924","C0887925","C0887965","C0917993","C0919437","C0920472","C0920627","C0936054","C0949367","C0949683","C0949758","C0950044","C0972196","C1032695","C1086460","C1135586","C1135599","C1136180","C1136203","C1136324","C1306889","C1335951","C1384901","C1395913","C1449809","C1449948","C1456651","C1456779","C1513276","C1513882","C1513899","C1516231","C1527351","C1527375","C1564007","C1568827","C1640363","C1704373","C1720765","C1720825","C1720894","C1720906","C1956422","C1959632","C1968739","C1968740","C1968742","C2239117","C2350311","C2350431","C2350503","C2603872","C2607925","C2713542","C2716665","C2717746","C2717864","C2718001","C2748918","C2930540","C2930541","C2930748","C2930815","C2930817","C2930818","C2930830","C2931079","C2931170","C2931202","C2931241","C2931297","C2931370","C2931406","C2931429","C2931490","C2931495","C2931500","C2931520","C2931529","C2931530","C2931738","C2931866","C2931869","C2931871","C2931872","C2931906","C2931915","C2986731","C2987126","C2987188","C2987189","C3106778","C3178878","C3178892","C3178994","C3178995","C3179001","C3179006","C3179037","C3179038","C3179199","C3179393","C3266697","C3489416","C3489626","C3494153","C3494179","C3508472","C3641330","C3652932","C3658247","C3658253","C3659789","C3661463","C3661486","C3837219","C3840121","C3850071","C3850077","C3850157","C3850175","C3852980","C3853009","C3853042","C3853056","C3853059","C3854373","C3873487","C4018978","C4019167","C4048184","C4076240","C4272394","C4272690","C4277512","C4479645","C4704687","C4704844","C4704890","C4704942","C4704945","C4759683","C4759722","C4760110","C4760905","C4763587","C5197901","C5200697","C5200770","C5200806","C5226515","C5243472","C5243473","C5392078","C5392111","C5433950","C5444124","C5445150","C5540858","C5543888","C5544083","C5544350","C5544397","C5544449","C5544451","C5544493","C5544539","C5545191","C5545326","C5551904","C5574859","C0204096","C4042764","C5574948","C5671326","C5690345","C5690375","C5690700","C5690757","C5690819","C5691260")
+
+removingdiseasesnotindisgenet3=c("C0000864","C0000898","C0002121","C0002122","C0002465","C0008078","C0008079","C0009586","C0009587","C0009588","C0009589","C0011211","C0011365","C0011366","C0013562","C0015318","C0018256","C0018684","C0018690","C0018712","C0018713","C0018714","C0018715","C0018719","C0018720","C0018721","C0018722","C0018724","C0018725","C0018726","C0018727","C0018730","C0018731","C0018732","C0018733","C0018734","C0018735","C0018736","C0018738","C0018739","C0018740","C0018741","C0018745","C0018747","C0018748","C0018749","C0018753","C0018754","C0018755","C0018756","C0018757","C0018759","C0018761","C0018762","C0018763","C0018764","C0018765","C0018766","C0021276","C0021682","C0022405","C0024827","C0024921","C0024922","C0027451","C0027452","C0027454","C0027458","C0027459","C0027460","C0027468","C0030260","C0030672","C0031198","C0034019","C0034020","C0034021","C0034022","C0034023","C0034024","C0034379","C0034597","C0034970","C0038489","C0078516","C0079272","C0079920","C0080192","C0080193","C0080268","C0085100","C0085552","C0085553","C0085563","C0086034","C0086208","C0086387","C0086388","C0086393","C0086690","C0086887","C0175171","C0205787","C0205806","C0241889","C0242243","C0243030","C0282184","C0282389","C0282484","C0282506","C0282599","C0282602","C0282603","C0282622","C0302827","C0376344","C0376627","C0376640","C0376688","C0524771","C0525051","C0525052","C0525053","C0557545","C0679809","C0679918","C0679930","C1136168","C1136362","C1136363","C1136374","C1456573","C1456722","C1519382","C1563881","C1567535","C1704312","C2718010","C2718011","C2718032","C2718080","C2936756","C2963171","C3242284","C3489533","C3494184","C3494228","C3494229","C3494295","C3494318","C3494320","C3661468","C3661520","C3849995","C3850015","C3853022","C4042758","C4042838","C4042853","C4045976","C4277528","C4704686","C4704688","C4704699","C4704932","C4760622","C5200690","C5200764","C5544471","C5544504","C5544540","C5690783","C5690785","C5690869","C5690902","C5691265","C5691332","C5691334","C5691335","C5691374","C5691405","C5691440","C0007294","C0010802","C0017380","C0017381","C0017382","C0017387","C0017393","C0017395","C0017397","C0017398","C0017399","C0017403","C0020124","C0021005","C0022958","C0031325","C0034529","C0036576","C0039480","C0086345","C0086876","C0204457","C0242960","C0243064","C0243151","C0289417","C0299048","C0376317","C0376542","C0451074","C0475497","C0524601","C0524602","C0662917","C0662918","C0677578","C0678933","C0678963","C0679560","C0813145","C0917892","C0949313","C0950132","C0950145","C1136308","C1136352","C1136395","C1516924","C1519068","C1563692","C2350313","C2350314","C2350469","C2717776","C2717811","C2717878","C2936488","C2986505","C3489705","C3494301","C3532942","C3854145","C4042951","C4042952","C4046090","C4046091","C4046092","C4704717","C4704891","C5197906","C5243580","C5544401","C5544500","C5544511","C5545213","C5545234","C5690905","C5691259","C5691355","C5691356","C5691357","C0001796","C0001827","C0005939","C0008071","C0008412","C0009613","C0013552","C0017320","C0018271","C0020119","C0023013","C0024960","C0026755","C0031210","C0035170","C0079335","C0079337","C0079697","C0079864","C0080151","C0085257","C0085258","C0086426","C0205714","C0243100","C0243101","C0243107","C0268680","C0282113","C0282437","C0339643","C0376677","C0472786","C0597252","C0597634","C0648977","C0936085","C0949649","C1135598","C1443228","C1527330","C1561989","C1623416","C2718087","C2931083","C2931113","C2931141","C2931589","C2931661","C2931839","C2936896","C3179539","C4084968","C4704684","C5545264")
+
+removingdiseasesnotindisgenet4=c("C0001864","C0009651","C0013551","C0034936","C0076101","C0243082","C0243084","C0337645","C0376450","C0376466","C0529557","C0681124","C1569786","C2715595","C3266262","C4310287","C5544514","C5545285","C5545294","C0000880","C0001139","C0001249","C0001255","C0001416","C0001486","C0001577","C0002796","C0005508","C0005741","C0006015","C0006035","C0006193","C0006196","C0006197","C0006271","C0006277","C0006396","C0006444","C0006638","C0006899","C0006906","C0007605","C0007684","C0007860","C0007894","C0007971","C0008153","C0008513","C0008526","C0008728","C0009774","C0009885","C0010078","C0010153","C0010356","C0010414","C0010930","C0011220","C0011352","C0011431","C0011454","C0013298","C0013371","C0013533","C0015029","C0016735","C0016879","C0017161","C0017407","C0017574","C0017675","C0018202","C0018482","C0018570","C0020091","C0021334","C0022073","C0022081","C0022573","C0022729","C0022882","C0022893","C0023059","C0023067","C0024205","C0024225","C0024266","C0024267","C0024904","C0024959","C0025064","C0025094","C0025469","C0026945","C0026975","C0027441","C0027547","C0027613","C0029400","C0029420","C0029421","C0029443","C0029878","C0030326","C0030332","C0030343","C0030455","C0030583","C0030593","C0030636","C0030790","C0031024","C0031037","C0031055","C0031065","C0031111","C0031129","C0031164","C0031350","C0031542","C0034041","C0034103","C0034183","C0034184","C0034544","C0035036","C0035037","C0035112","C0035369","C0035408","C0035592","C0035690","C0036465","C0036749","C0037023","C0038522","C0038826","C0038941","C0039503","C0039520","C0040021","C0040046","C0040147","C0040361","C0040425","C0040447","C0040584","C0040820","C0040843","C0040921","C0040923","C0041188","C0041374","C0062523","C0062524","C0062525","C0062526","C0062529","C0073181","C0078889","C0078978","C0079619","C0079629","C0079680","C0080005","C0080040","C0080051","C0085293","C0085294","C0085305","C0085308","C0085313","C0085389","C0085392","C0085394","C0085395","C0085557","C0086110","C0086254","C0086459","C0086789","C0151295","C0151317","C0151448","C0153017","C0153166","C0153261","C0155223","C0155448","C0158300","C0158309","C0158945","C0162451","C0162504","C0162598","C0162610","C0162623","C0162624","C0162625","C0162626","C0162629","C0162631","C0162636","C0162637","C0166049","C0170300","C0173083","C0205339","C0205765","C0205999","C0206063","C0206178","C0206197","C0206294","C0206418","C0206437","C0238528","C0240903","C0241913","C0242250","C0242337","C0242338","C0242381","C0242994","C0262988","C0263449","C0263506","C0263907","C0264005","C0267026","C0267034","C0267154","C0267539","C0267770","C0267841","C0269050","C0269084","C0270638","C0271815","C0275522","C0275524","C0275578","C0275619","C0275708","C0275767","C0276275","C0276289","C0276379","C0276386","C0276657","C0276712","C0276713","C0276714","C0276715","C0276716","C0276791","C0276908","C0277066","C0277131","C0277202","C0282571","C0300934","C0302507","C0302809","C0313397","C0318146","C0318807","C0318809","C0325057","C0338430","C0338538","C0338589","C0376171","C0376325","C0376549","C0376550","C0376551","C0376620","C0442886","C0472347","C0487784","C0519036","C0521610","C0525569","C0549398","C0553548","C0554628","C0586989","C0596270","C0596773","C0598108","C0678201","C0681033","C0681034","C0686715","C0771080","C0814630","C0887976","C0908146","C0917807")
+
+removingdiseasesnotindisgenet5=c("C0919833","C0936251","C0936254","C0949819","C0949990","C0950124","C0960292","C0969753","C0995661","C0997364","C1017759","C1034499","C1034592","C1036138","C1050028","C1053051","C1056920","C1071336","C1074238","C1079055","C1096584","C1112209","C1135821","C1136339","C1257844","C1257847","C1257859","C1257860","C1257878","C1311605","C1337035","C1384687","C1387797","C1442869","C1449935","C1449936","C1456791","C1462403","C1462404","C1488100","C1499651","C1504554","C1527394","C1532322","C1533060","C1535917","C1563770","C1563772","C1563773","C1564568","C1567139","C1610617","C1623452","C1638966","C1704275","C1720885","C1891896","C1916415","C1956390","C1957142","C1957143","C1957143","C2020625","C2028293","C2240392","C2350440","C2350476","C2586197","C2609129","C2711397","C2717346","C2717956","C2743586","C2743587","C2743588","C2747880","C2930681","C2930821","C2930824","C2930837","C2930862","C2930868","C2931080","C2931091","C2931101","C2931167","C2931173","C2931315","C2931319","C2931521","C2931639","C2931717","C2931825","C2931847","C2931873","C2931892","C2931902","C2933394","C2936443","C2936881","C2936917","C2973529","C2992159","C3064079","C3158983","C3178851","C3179278","C3181613","C3203547","C3489414","C3489415","C3558262","C3558386","C3592756","C3592805","C3657129","C3661475","C3666010","C3853541","C3946462","C3974657","C3987894","C4003663","C4046045","C4046046","C4046048","C4046050","C4049364","C4096922","C4100402","C4130634","C4133584","C4181864","C4189667","C4193702","C4193703","C4201658","C4207057","C4214093","C4290000","C4308760","C4308946","C4316792","C4316918","C4318485","C4703481","C4761265","C4849614","C5060183","C5083258","C5200297","C5200733","C5200781","C5200782","C5200826","C5227122","C5250445","C5254966","C5254970","C5260088","C5391324","C5391328","C5391329","C5391330","C5391331","C5391332","C5391333","C1046096","C1046402","C1046528","C1047211","C1047901","C1047945","C1048001","C1048214","C1052921","C1053089","C1054636","C1056473","C1056474","C1057045","C1057135","C1057759","C1059647","C1060715","C1062312","C1062577","C1062582","C1062667","C1062668","C1062729","C1062953","C1062959","C1063059","C1065809","C1066251","C1066486","C1066657","C1067155","C1067900","C1068031","C1068818","C1069862","C1069981","C1070335","C1070523","C1071061","C1071062","C1071123","C1072887","C1073606","C1074600","C1074601","C1074840","C1075075","C1075093","C1077093","C1079186","C1079571","C1081253","C1081254","C1081703","C1082087","C1082335","C1082947","C1086891","C1087185","C1088016","C1090841","C1091890","C1092336","C1093056","C1093215","C1093940","C1094635","C1096151","C1101673","C1135984","C1136148","C1136154","C1136178","C1136355","C1160657","C1304600","C1304619","C1318704","C1318712","C1332135","C1412041","C1432893","C1450224","C1452922","C1455735","C1456463","C1456466","C1457865","C1458323","C1459641","C1460572","C1461263","C1461528","C1462017","C1462586","C1463381","C1469996","C1469997","C1469998","C1470395","C1470495","C1470636","C1470637","C1472139","C1476057","C1476325","C1477064","C1477252","C1479694","C1480343","C1480577","C1481914","C1484870","C1486981","C1488999","C1494483","C1494640","C1495486","C1495487","C1496161","C1496343","C1498239","C1498828","C1503446","C1503447","C1519383","C1522396","C1524060","C1527239","C1527353","C1527395","C1530971","C1530972","C1532959","C1533618","C1566300","C1567985","C1568581","C1569170","C1609227","C1609777","C1619738","C1622659","C1623698","C1624251","C1625355","C1625799","C1626501","C1627519","C1628028","C1629281")
+
+removingdiseasesnotindisgenet6=c("C1630291","C1631400","C1636457","C1639610","C1639990","C1640866","C1641195","C1641393","C1642142","C1643264","C1646689","C1646817","C1648762","C1651502","C1653320","C1653690","C1659887","C1704427","C1720839","C1720915","C1721019","C1721020","C1802405","C1809475","C1887677","C1894673","C1908482","C1909852","C1922982","C1925053","C1931150","C1932057","C1935485","C1937763","C1942652","C1956395","C1956396","C1956418","C1960439","C1960583","C1968593","C2029348","C2062615","C2203937","C2609059","C2609176","C2609259","C2713348","C2717757","C2717760","C2717803","C2717861","C2717975","C2717976","C2717994","C2748555","C2930802","C2930805","C2930850","C2930859","C2930864","C2930865","C2930866","C2930867","C2930869","C2930871","C2930890","C2930897","C2930901","C2930912","C2930926","C2930938","C2930940","C2930941","C2930947","C2930948","C2930949","C2930950","C2930951","C2930952","C2930953","C2930954","C2930955","C2930956","C2930961","C2930962","C2930963","C2930965","C2930966","C2930968","C2930978","C2930988","C2930992","C2930993","C2931014","C2931016","C2931023","C2931026","C2931041","C2931043","C2931047","C2931049","C2931050","C2931051","C2931052","C2931053","C2931054","C2931056","C2931060","C2931061","C2931062","C2931063","C2931065","C2931066","C2931070","C2931071","C2931076","C2931077","C2931078","C2931088","C2931089","C2931090","C2931096","C2931099","C2931100","C2931102","C2931115","C2931119","C2931120","C2931125","C2931126","C2931128","C2931129","C2931142","C2931146","C2931149","C2931159","C2931162","C2931168","C2931169","C2931172","C2931177","C2931182","C2931183","C2931184","C2931188","C2931195","C2931197","C2931200","C2931214","C2931219","C2931220","C2931221","C2931222","C2931224","C2931225","C2931226","C2931231","C2931233","C2931235","C2931239","C2931240","C2931243","C2931255","C2931256","C2931266","C2931267","C2931269","C2931270","C2931273","C2931283","C2931284","C2931285","C2931289","C2931291","C2931292","C2931293","C2931294","C2931295","C2931298","C2931300","C2931301","C2931302","C2931307","C2931309","C2931323","C2931361","C2931362","C2931363","C2931369","C2931372","C2931373","C2931374","C2931376","C2931377","C2931381","C2931385","C2931390","C2931391","C2931392","C2931393","C2931394","C2931396","C2931397","C2931398","C2931402","C2931405","C2931411","C2931412","C2931413","C2931414","C2931419","C2931437","C2931438","C2931439","C2931440","C2931442","C2931443","C2931447","C1009185","C1009512","C1009874","C1010486","C1010542","C1010625","C1011501","C1011751","C1012071","C1012094","C1012132","C1012482","C1012933","C1012934","C1013187","C1013497","C1013626","C1014542","C1014716","C1014960","C1015912","C1015924","C1016150","C1017210","C1017212","C1017747","C1018478","C1019124","C1019722","C1019826","C1019865","C1019931","C1020337","C1021729","C1021771","C1024350","C1024879","C1025370","C1025782","C1026188","C1026526","C1026609","C1027160","C1027341","C1027556","C1028110","C1028240","C1029130","C1029397","C1030067","C1034505","C1034865","C1035097","C1036087","C1037081","C1037431","C1037541","C1037611","C1037612","C1039105","C1039714","C1039753","C1041561","C1042690","C1043884","C1044273","C1045020","C1046093","C1046096")                               
+
+removingdiseasesnotindisgenet7=c("C5433380","C5433436","C5433437","C5433524","C5435349","C5435350","C5435352","C5435383","C5541424","C5544419","C5544509","C5574736","C5671289","C5690863","C5691304","C5691305","C5691328","C5772190","C5773487","C1957143","C2020625","C2028293","C2240392","C2350440","C2350476","C2586197","C2609129","C2711397","C2717346","C2717956","C2743586","C2743587","C2743588","C2747880","C2930681","C2930821","C2930824","C2930837","C2930862","C2930868","C2931080","C2931091","C2931101","C2931167","C2931173","C2931315","C2931319","C2931521","C2931639","C2931717","C2931825","C2931847","C2931873","C2931892","C2931902","C2933394","C2936443","C2936881","C2936917","C2973529","C2992159","C3064079","C3158983","C3178851","C3179278","C3181613","C3203547","C3489414","C3489415","C3558262","C3558386","C3592756","C3592805","C3657129","C3661475","C3666010","C3853541","C3946462","C3974657","C3987894","C4003663","C4046045","C4046046","C4046048","C4046050","C4049364","C4096922","C4100402","C4130634","C4133584","C4181864","C4189667","C4193702","C4193703","C4201658","C4207057","C4214093","C4290000","C4308760","C4308946","C4316792","C4316918","C4318485","C4703481","C4761265","C4849614","C5060183","C5083258","C5200297","C5200733","C5200781","C5200782","C5200826","C5227122","C5250445","C5254966","C5254970","C5260088","C5391324","C5391328","C5391329","C5391330","C5391331","C5391332","C5391333","C5433380","C5433436","C5433437","C5433524","C5435349","C5435350","C5435352","C5435383","C5541424","C5544419","C5544509","C5574736","C5671289","C5690863","C5691304","C5691305","C5691328","C5772190","C5773487","C0000742","C0000769","C0001085","C0001417","C0001483","C0001484","C0001489","C0001580","C0001583","C0001699","C0001727","C0001749","C0001817","C0001892","C0002331","C0002405","C0002464","C0002636","C0004842","C0004927","C0004928","C0004933","C0004937","C0004939","C0004940","C0004941","C0004942","C0005523","C0005670","C0005750","C0005867","C0006063","C0006285","C0006394","C0006430","C0006562","C0006895","C0006915","C0007456","C0007825","C0007856","C0007949","C0008028","C0008056","C0008065","C0008088","C0008113","C0008147","C0008300","C0009829","C0009862","C0009964","C0009967","C0010147","C0010233","C0010243","C0010247","C0010261","C0010329","C0010825","C0010967","C0011139","C0011315","C0013288","C0013403","C0013534","C0013590","C0015035","C0015190","C0015275","C0016558","C0016630","C0016720","C0017301","C0017467","C0017494","C0018121","C0018125","C0018150","C0018252","C0018311","C0018539","C0018611","C0018895","C0018896","C0020080","C0020081","C0020936","C0021125","C0021344","C0021404","C0022338","C0022369","C0022551","C0022654","C0022722","C0022735","C0022858","C0023002","C0023093","C0023104","C0023370","C0023500","C0023549","C0024164","C0024662","C0024787","C0024866","C0024919","C0025011","C0025048","C0025183","C0025184","C0025279","C0025621","C0026783","C0026785","C0026907","C0026941","C0026979","C0027073","C0027150","C0027160","C0027577","C0027670","C0029343","C0029347","C0029348","C0029349","C0029360","C0029941","C0030225","C0030271","C0030466","C0030474","C0030492","C0030531","C0030644","C0030653","C0030660","C0030664","C0031254","C0034492","C0034497","C0034725","C0035042","C0035154","C0035354","C0035400","C0035473","C0035614","C0035638","C0035686","C0035691","C0036636","C0036638","C0036639","C0036864","C0036991","C0036992","C0038531","C0038632","C0038828","C0039082","C0039258","C0039319","C0039496","C0039792","C0039879","C0039984","C0040074","C0040333","C0040615","C0059381","C0060140")
+
+removingdiseasesnotindisgenet8=c("C0061673","C0063532","C0067016","C0072378","C0072553","C0072554","C0072574","C0079033","C0079034","C0079324","C0079338","C0079668","C0079679","C0079936","C0079940","C0079947","C0080153","C0080180","C0084088","C0085224","C0085229","C0085266","C0085277","C0085281","C0085377","C0085381","C0085391","C0085404","C0085445","C0085489","C0085504","C0085512","C0085521","C0085522","C0085732","C0085865","C0085883","C0085925","C0086042","C0086114","C0086335","C0086384","C0086645","C0086658","C0086776","C0086831","C0086877","C0105067","C0151500","C0151638","C0152222","C0155339","C0156372","C0158481","C0162473","C0162646","C0168434","C0178494","C0204512","C0205469","C0205660","C0205661","C0205662","C0205676","C0205790","C0205809","C0205811","C0205933","C0205934","C0205935","C0205936","C0205939","C0205940","C0206041","C0206043","C0206179","C0206239","C0206242","C0206259","C0206261","C0206264","C0206265","C0206266","C0206267","C0206268","C0206271","C0206272","C0206273","C0206274","C0206276","C0206346","C0206349","C0206350","C0206351","C0206352","C0206375","C0206391","C0206397","C0206398","C0206401","C0206402","C0206404","C0206406","C0206409","C0206412","C0206419","C0206424","C0206435","C0206452","C0206462","C0206464","C0206467","C0206469","C0206485","C0206497","C0206498","C0206507","C0206508","C0206509","C0215490","C0242407","C0242435","C0242952","C0242966","C0243025","C0243052","C0243053","C0243139","C0243140","C0243154","C0243155","C0243156","C0243157","C0243244","C0244450","C0250408","C0250783","C0257095","C0263386","C0264383","C0264510","C0264511","C0264573","C0265248","C0265328","C0265349","C0265372","C0265373","C0265374","C0266015","C0266427","C0267494","C0267878","C0268074","C0268314","C0268365","C0268451","C0268478","C0268501","C0268622","C0270709","C0270869","C0270887","C0271270","C0271373","C0272174","C0277919","C0282309","C0282376","C0282472","C0282583","C0296390","C0302280","C0302834","C0311376","C0314901","C0317741","C0317818","C0317830","C0318047","C0318048","C0318593","C0318594","C0318627","C0318651","C0318666","C0318716","C0318723","C0318724","C0318725","C0318731","C0318736","C0318739","C0318744","C0318750","C0318769","C0318770","C0318772","C0318779","C0318786","C0318787","C0318791","C0318793","C0318796","C0318810","C0318812","C0318813","C0318815","C0318826","C0318849","C0318853","C0318855","C0318856","C0318861","C0318872","C0318874","C0318888","C0318889","C0318906","C0318907","C0318936","C0318938","C0318940","C0318941","C0318942","C0318943","C0318944","C0318946","C0318950","C0318961","C0318965","C0319000","C0319016","C0319021","C0319022","C0319038","C0319107","C0319109","C0319113","C0319114","C0319115","C0319151","C0319160","C0319260","C0319261","C0319263","C0319269","C0319273","C0319291","C0319293","C0319311","C0319314","C0319321","C0319331","C0319333","C0319361","C0319366","C0319446","C0319450","C0319454","C0319455","C0319456","C0319480","C0338465","C0339288","C0339432","C0339731","C0376287","C0376299","C0376311","C0376324","C0376363","C0376365","C0376378","C0376406","C0376417","C0376455","C0376456","C0376458","C0376460","C0376463","C0376464","C0376465","C0376467","C0376468","C0376470","C0376471","C0376472","C0376474","C0376475","C0376476","C0376477","C0376479","C0376482","C0376488","C0376489","C0376497","C0376502","C0376503","C0376521","C0376535","C0376536","C0376538","C0376572","C0376573","C0376574","C0376577","C0376578","C0376685","C0376704","C0378543","C0450978","C0451680","C0451681","C0455715","C0455716","C0455717","C0455718","C0457014")
+
+removingdiseasesnotindisgenet9=c("C0458219","C0458224","C0474416","C0475483","C0476431","C0520498","C0520499","C0520500","C0520501","C0520502","C0520503","C0520698","C0520711","C0520716","C0520799","C0521026","C0524699","C0524700","C0524781","C0524782","C0524783","C0524784","C0537774","C0538942","C0544008","C0544198","C0544231","C0546153","C0546303","C0549143","C0549472","C0557555","C0558039","C0560651","C0563266","C0589088","C0595985","C0596775","C0596824","C0597418","C0597804","C0597805","C0597806","C0597807","C0598035","C0598201","C0598202","C0598205","C0598206","C0598318","C0598886","C0599168","C0599178","C0648881","C0649994","C0649996","C0651554","C0658430","C0658432","C0668851","C0668881","C0670966","C0673205","C0677499","C0679152","C0680406","C0680967","C0683444","C0686721","C0762601","C0764363","C0770688","C0795848","C0795873","C0795891","C0795914","C0795933","C0795936","C0795939","C0795944","C0795947","C0795959","C0795969","C0795970","C0795976","C0796002","C0796005","C0796020","C0796023","C0796024","C0796038","C0796045","C0796046","C0796062","C0796076","C0796086","C0796088","C0796092","C0796100","C0796110","C0796118","C0796140","C0796162","C0796192","C0796197","C0796204","C0796264","C0796271","C0796276","C0796282","C0814050","C0815107","C0887881","C0887889","C0887903","C0887913","C0887914","C0908691","C0909606","C0917781","C0919918","C0936088","C0948031","C0948245","C0949287","C0949342","C0949355","C0949482","C0949484","C0949493","C0949508","C0949509","C0949510","C0949512","C0949522","C0949529","C0949530","C0949531","C0949533","C0949537","C0949538","C0949548","C0949549","C0949550","C0949551","C0949553","C0949554","C0949555","C0949556","C0949557","C0949575","C0949580","C0949710","C0949711","C0949712","C0949713","C0949714","C0949715","C0949717","C0949724","C0949725","C0949767","C0949883","C0949889","C0949892","C0949896","C0949907","C0949908","C0949909","C0949914","C0949919","C0949920","C0949921","C0949922","C0949923","C0949925","C0949926","C0949929","C0949930","C0949936","C0949940","C0950102","C0950103","C0950105","C0950118","C0950119","C0950125","C0950126","C0969633","C0969652","C0969654","C0969661","C0969665","C0995301","C0995608","C0995616","C0999770","C0999773","C0999774","C0999775","C0999776","C0999778","C0999780","C0999783","C0999784","C0999841","C0999843","C0999913","C0999914","C0999919","C0999921","C0999922","C0999923","C0999926","C0999927","C0999928","C0999980","C1000186","C1000249","C1000250","C1000271","C1000272","C1000278","C1000279","C1000281","C1000282","C1000283","C1000289","C1000290","C1000291","C1000292","C1000293","C1000295","C1000296","C1000297","C1000298","C1000299","C1000300","C1000301","C1000302","C1000304","C1000306","C1000307","C1000308","C1000312","C1000313","C1000315","C1000317","C1000319","C1000320","C1000321","C1000323","C1000324","C1000326","C1000327","C1000329","C1000330","C1000331","C1000334","C1000335","C1000336","C1000337","C1000339","C1000341","C1000342","C1000343","C1000346","C1000347","C1000348","C1000349","C1000350","C1000351","C1000352","C1000353","C1000407","C1000417","C1000418","C1000432","C1000434","C1000437","C1000445","C1000450","C1001324","C1001930","C1001958","C1001975","C1001978","C1001981","C1001982","C1002572","C1003702","C1003730","C1003732","C1003733","C1003734","C1003736","C1003745","C1003893","C1004258","C1004667","C1004676","C1004678","C1004682","C1005555","C1005566","C1005569","C1005570","C1005571","C1005572","C1005575","C1005582","C1005595","C1006232","C1006777","C1007051","C1007189","C1008204","C1008397","C1008398","C1008399","C1008759","C1009001")
+
+removingdiseasesnotindisgenet10=c("C2931447","C2931448","C2931449","C2931450","C2931452","C2931453","C2931454","C2931460","C2931462","C2931463","C2931464","C2931465","C2931466","C2931467","C2931468","C2931473","C2931474","C2931475","C2931484","C2931486","C2931491","C2931492","C2931494","C2931499","C2931503","C2931506","C2931508","C2931509","C2931510","C2931511","C2931512","C2931513","C2931514","C2931515","C2931522","C2931523","C2931524","C2931533","C2931535","C2931537","C2931538","C2931542","C2931543","C2931546","C2931548","C2931549","C2931550","C2931551","C2931553","C2931578","C2931579","C2931580","C2931581","C2931582","C2931586","C2931587","C2931590","C2931593","C2931594","C2931595","C2931607","C2931616","C2931617","C2931643","C2931646","C2931647","C2931651","C2931654","C2931655","C2931656","C2931657","C2931659","C2931663","C2931667","C2931668","C2931684","C2931685","C2931719","C2931722","C2931733","C2931734","C2931737","C2931740","C2931741","C2931742","C2931745","C2931750","C2931751","C2931757","C2931759","C2931764","C2931765","C2931773","C2931775","C2931776","C2931777","C2931778","C2931818","C2931819","C2931828","C2931831","C2931859","C2931862","C2931878","C2931912","C2931914","C2936447","C2936594","C2936859","C2936910","C2958078","C2974016","C2985398","C2985459","C2986418","C2988232","C2989013","C2989304","C2990042","C3000063","C3011773","C3055014","C3055132","C3083228","C3083540","C3085895","C3134810","C3135457","C3146196","C3150890","C3178770","C3178970","C3178984","C3179054","C3179403","C3181741","C3203533","C3252331","C3266164","C3489730","C3556996","C3557007","C3557384","C3557539","C3584729","C3586530","C3592314","C3592828","C3592904","C3617114","C3620623","C3625842","C3627505","C3630366","C3631922","C3658254","C3661448","C3661449","C3672366","C3686947","C3694279","C3698360","C3850962","C3853030","C3853031","C3897122","C3900380","C3906160","C3914732","C3918582","C3921410","C3921562","C3931985","C3932013","C3932646","C3937295","C3938098","C3949528","C3949547","C3949589","C3949608","C3950545","C3950613","C3950757","C3957853","C3959113","C3959114","C3969624","C3975265","C3990688","C3994537","C3999526","C4003795","C4005701","C4005712","C4018878","C4038448","C4042773","C4042868","C4042874","C4046027","C4048746","C4049701","C4078861","C4079276","C4091206","C4093629","C4124928","C4130668","C4137474","C4141269","C4166162","C4181698","C4193471","C4193472","C4196960","C4222995","C4267893","C4277522","C4277523","C4277539","C4277701","C4284413","C4310033","C4316902","C4316916","C4704671","C4704678","C4704695","C4704767","C4704934","C4704935","C4704939","C4727992","C4742221","C4742224","C4742248","C4742448","C4742577","C4742579","C4742580","C4742581","C4742583","C4742584","C4742652","C4742653","C4760799","C4780646","C4901552","C5062725","C5074687","C5074702","C5197907","C5200717","C5200734","C5200989","C5203693","C5226753","C5227037","C5243476","C5258259","C5285694","C5389369","C5391440","C5392103","C5392143","C5392151","C5433520","C5433861","C5433862","C5434743","C5435123","C5435753","C5441717","C5441816","C5544362","C5544413","C5544414","C5544508","C5544815","C5545242","C5545250","C5545319","C5574851","C5574950","C5671291","C5690721","C5690723","C5690790","C5690831","C5690852","C5690864","C5690874","C5690893","C5691166","C5691167","C5691275","C5691276","C5691312","C5771965","C5772805","C5772806","C5772807","C5772808","C5773107","C5773944","C5773945","NA")
+
+removingdiseasesnotindisgenet11=c("C0030978","C0035232","C0036675","C0040197","C0086523","C0175378","C0175382","C0175845","C0205858","C0206306","C0243067","C0268445","C0270810","C0270898","C0271141","C0339662","C0456511","C1392622","C1720835","C2350290","C2931143","C2931444","C2931918","C3179083","C3179084","C3179085","C3489733","C3697716","C4318382","C5059679","C5545243","C5690763")
+
+removingdiseasesnotindisgenet = c(removingdiseasesnotindisgenet,removingdiseasesnotindisgenet2,
+                                  removingdiseasesnotindisgenet3, removingdiseasesnotindisgenet4,
+                                  removingdiseasesnotindisgenet5,removingdiseasesnotindisgenet6,
+                                  removingdiseasesnotindisgenet7,removingdiseasesnotindisgenet8,
+                                  removingdiseasesnotindisgenet9,removingdiseasesnotindisgenet10,
+                                  removingdiseasesnotindisgenet11)
+diseasesOfInterest <- diseasesOfInterest[!diseasesOfInterest %in% removingdiseasesnotindisgenet]
+
+diseasesOfInterest1 = diseasesOfInterest[1:447]
+diseasesOfInterest2 = diseasesOfInterest[448:596]
+
+```
+
+
+```{r DisGeNET}
+
+output_dir <- "/finalanalysis/enrichment"
+
+qps <- array(readLines("/data/hg38_QPs_genes_symbols.txt"))
+
+res_enrich <-disease_enrichment( entities =qps, vocabulary = "HGNC", database = "ALL")
+res_enrich2 <-disease_enrichment( entities =qps, vocabulary = "HGNC", database = "CURATED")
+
+table1 <- res_enrich@qresult[1:50, c("Description", "FDR", "Ratio",  "BgRatio")]
+table2 <- res_enrich2@qresult[1:50, c("Description", "FDR", "Ratio",  "BgRatio")]
+
+plot( res_enrich, class = "Enrichment",  cutoff= 0.05, nchars=70)
+
+p = plot( res_enrich, class = "Enrichment",  cutoff= 0.0000000000000001, nchars=70)
+ggsave(paste0(output_dir, "/enrichment_all_QPS.png"), p, width = 10, height = 10, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/enrichment_all_QPS.svg"), p, width = 10, height = 10, units = "in", dpi = 300)
+
+p = plot( res_enrich2, class = "Enrichment",  cutoff= 0.05, nchars=70)
+ggsave(paste0(output_dir, "/enrichment_curated_QPS.png"), p, width = 10, height = 10, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/enrichment_curated_QPS.svg"), p, width = 10, height = 10, units = "in", dpi = 300)
+
+
+output_dir <- "/finalanalysis/DEQPenrichment"
+
+mostsiggenes = cluster.markers2 %>% group_by(cluster) %>% slice_min(order_by = p_val_adj, n = 2)
+
+positivelogfoldchange = subset(mostsiggenes, avg_log2FC>0)
+negativelogfoldchange = subset(mostsiggenes, avg_log2FC<0)
+
+clusterposgenes = positivelogfoldchange %>% group_by(cluster) %>% slice_max(order_by = avg_log2FC, n = 10) 
+clusterneggenes = negativelogfoldchange %>% group_by(cluster) %>% slice_min(order_by = avg_log2FC, n = 10) 
+
+posfeatures = c(unique(clusterposgenes$gene))
+negfeatures = c(unique(clusterneggenes$gene))
+
+
+datapos <- gene2disease(
+  gene     = posfeatures,
+  score =c(0.3, 1),
+  verbose  = TRUE
+)
+
+dataQPS_filtered <- datapos@qresult
+dataQPS_filtered = dataQPS_filtered[dataQPS_filtered$gene_symbol %in% qps,]
+datapos@qresult = dataQPS_filtered
+
+p = plot(datapos,class="DiseaseClass")
+ggsave(paste0(output_dir, "/diseaseclass_QPS.png"), p, width = 20, height = 20, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/diseaseclass_QPS.svg"), p, width = 20, height = 20, units = "in", dpi = 300)
+
+###########ALL###############
+
+output_dir <- "/finalanalysis/umlsenrichment"
+
+dataQPS1 <- disease2gene(
+  disease = diseasesOfInterest1,
+  database = "ALL",
+  score =c(0.3,1),
+  verbose  = TRUE )
+dataQPS2 <- disease2gene(
+  disease = diseasesOfInterest2,
+  database = "ALL",
+  score =c(0.3,1),
+  verbose  = TRUE )
+
+dataQPS_filtered <- rbind(dataQPS1@qresult, dataQPS2@qresult)
+
+dataQPS_nonfiltered = dataQPS_filtered
+
+dataQPS_filtered = dataQPS_filtered[dataQPS_filtered$gene_symbol %in% qps,]
+slot_data <- as.data.frame(dataQPS_filtered)
+dataQPS1@qresult = dataQPS_filtered
+
+dataQPS_nonfiltered = as.data.frame(dataQPS_nonfiltered)
+
+# Filter diseases with more than 10 genes
+disease_gene_count <- slot_data %>% group_by(disease_name) %>% summarise(gene_count = n())
+diseases_with_more_than_10_genes <- disease_gene_count %>% filter(gene_count >= 7) %>% pull(disease_name)
+slot_data_filtered <- slot_data %>% filter(disease_name %in% diseases_with_more_than_10_genes)
+
+dataQPS_nonfiltered = dataQPS_nonfiltered %>% filter(disease_name %in% diseases_with_more_than_10_genes)
+
+all_summary_data <- dataQPS_nonfiltered %>%
+  group_by(disease_name) %>%
+  summarize(count = n(),
+            avg_score = mean(score),
+            median_score = median(score),
+            sd_score = sd(score),
+            range_score = max(score) - min(score),
+            max_score = max(score),
+            min_score = min(score)) 
+
+all_summary_data <- all_summary_data %>%
+  mutate(ratio = count / sum(count))
+
+all_summary_data$disease_name <- factor(all_summary_data$disease_name, levels = all_summary_data$disease_name[order(all_summary_data$count)])
+
+# Create a summary data frame with the count, average score, median score, and standard deviation for each disease_name
+summary_data <- slot_data_filtered %>%
+  group_by(disease_name) %>%
+  summarize(count = n(),
+            avg_score = mean(score),
+            median_score = median(score),
+            sd_score = sd(score),
+            range_score = max(score) - min(score),
+            max_score = max(score),
+            min_score = min(score)) 
+
+summary_data <- summary_data %>%
+  arrange(desc(count))
+
+summary_data$disease_name <- factor(summary_data$disease_name, levels = summary_data$disease_name[order(summary_data$count)])
+
+summary_data <- summary_data %>%
+  mutate(label_text = paste0("Max Score: ", round(max_score, 2)))
+
+total_genes <- data.frame(row.names = all_summary_data$disease_name, count = all_summary_data$count)
+qps_genes <- data.frame(row.names = summary_data$disease_name, count = summary_data$count)
+
+total_genes_order <- order(rownames(total_genes))
+total_genes <- total_genes[total_genes_order, ]
+qps_genes_order <- order(rownames(qps_genes))
+qps_genes <- qps_genes[qps_genes_order, ]
+
+ratio <- data.frame(row.names = qps_genes_order, ratio = (qps_genes / total_genes))
+ratio <- ratio[rownames(summary_data), ]
+summary_data <- summary_data %>%
+  mutate(ratio = ratio)
+
+library(ggnewscale)
+
+# Then, create the first part of the plot with the bar and its scale fill gradient
+p3 <- ggplot(summary_data, aes(x = disease_name, y = count, fill = avg_score)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  geom_text(data = subset(summary_data, count <= 145), aes(label = label_text), hjust = -0.1, size = 3) +
+  geom_text(data = subset(summary_data, count > 145), aes(label = label_text), hjust = 1.1, size = 3, color = "white") +
+  coord_flip() +
+  scale_fill_gradient(name = "Average Score", low = "#0000a7", high ="#c1272d") +
+  theme(
+    panel.background = element_rect(fill = "white"),
+    axis.line = element_line(colour = "black"),
+    axis.title = element_blank()
+  )
+
+# Next, use new_scale_fill() to add a new fill scale
+p3 <- p3 + new_scale_fill()
+
+# Finally, add the tile and its scale fill gradient
+p3 <- p3 + 
+  geom_tile(aes(x = disease_name, y = 0, fill = ratio), width = 0.5, height = 3, position=position_dodge(width=0.9)) +
+  scale_fill_gradient2(name = "QP to Total Gene Ratio", low = "black",high ="green", mid="black")
+
+p3
+
+ggsave(paste0(output_dir, "/genediseasebarplot_QPS7.png"), p3, width = 10, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/genediseasebarplot_QPS7.svg"), p3, width = 10, height = 25, units = "in", dpi = 300)
+
+
+p4 = plot( dataQPS1,
+      class="ProteinClass",
+      )
+#p4 = p4 + coord_flip()
+
+ggsave(paste0(output_dir, "/genediseaseproteinheatmap_QPS.png"), p4, width = 25, height = 10, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/genediseaseproteinheatmap_QPS.svg"), p4, width = 25, height = 10, units = "in", dpi = 300)
+
+# Get the disease names with counts above 20 from summary_data
+disease_names <- summary_data %>%
+  filter(count >= 10) %>%
+  pull(disease_name)
+
+# Filter slot_data_filtered by the disease names
+slot_data_filtered <- slot_data_filtered %>%
+  filter(disease_name %in% disease_names)
+
+slot_data_filtered = slot_data_filtered[slot_data_filtered$score >=0.3,]
+
+
+p5 <- ggplot(slot_data_filtered, aes(x = disease_name, y = gene_symbol, fill = score)) +
+  geom_tile(stat = "identity") +
+  scale_fill_gradient(name = "Score", low = "#0000a7", high ="#c1272d") +
+  theme(
+    panel.background = element_rect(fill = "white"),
+    axis.line = element_line(colour = "black"),
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle = 45)
+  )
+p5
+
+ggsave(paste0(output_dir, "/genediseaseheatplot_QPS.png"), p5, width = 15, height = 20, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/genediseaseheatplot_QPS.svg"), p5, width = 15, height = 20, units = "in", dpi = 300)
+
+
+#############CURATED##################
+
+output_dir <- "/finalanalysis/umlsenrichment"
+
+dataQPS1 <- disease2gene(
+  disease = diseasesOfInterest1,
+  database = "CURATED",
+  score =c(0.3,1),
+  verbose  = TRUE )
+dataQPS2 <- disease2gene(
+  disease = diseasesOfInterest2,
+  database = "CURATED",
+  score =c(0.3,1),
+  verbose  = TRUE )
+
+dataQPS_filtered <- rbind(dataQPS1@qresult, dataQPS2@qresult)
+
+dataQPS_nonfiltered = dataQPS_filtered
+
+dataQPS_filtered = dataQPS_filtered[dataQPS_filtered$gene_symbol %in% qps,]
+slot_data <- as.data.frame(dataQPS_filtered)
+dataQPS1@qresult = dataQPS_filtered
+
+dataQPS_nonfiltered = as.data.frame(dataQPS_nonfiltered)
+
+# Filter diseases with more than 10 genes
+disease_gene_count <- slot_data %>% group_by(disease_name) %>% summarise(gene_count = n())
+diseases_with_more_than_10_genes <- disease_gene_count %>% filter(gene_count >= 7) %>% pull(disease_name)
+slot_data_filtered <- slot_data %>% filter(disease_name %in% diseases_with_more_than_10_genes)
+
+dataQPS_nonfiltered = dataQPS_nonfiltered %>% filter(disease_name %in% diseases_with_more_than_10_genes)
+
+all_summary_data <- dataQPS_nonfiltered %>%
+  group_by(disease_name) %>%
+  summarize(count = n(),
+            avg_score = mean(score),
+            median_score = median(score),
+            sd_score = sd(score),
+            range_score = max(score) - min(score),
+            max_score = max(score),
+            min_score = min(score)) 
+
+all_summary_data <- all_summary_data %>%
+  mutate(ratio = count / sum(count))
+
+all_summary_data$disease_name <- factor(all_summary_data$disease_name, levels = all_summary_data$disease_name[order(all_summary_data$count)])
+
+# Create a summary data frame with the count, average score, median score, and standard deviation for each disease_name
+summary_data <- slot_data_filtered %>%
+  group_by(disease_name) %>%
+  summarize(count = n(),
+            avg_score = mean(score),
+            median_score = median(score),
+            sd_score = sd(score),
+            range_score = max(score) - min(score),
+            max_score = max(score),
+            min_score = min(score)) 
+
+summary_data <- summary_data %>%
+  arrange(desc(count))
+
+summary_data$disease_name <- factor(summary_data$disease_name, levels = summary_data$disease_name[order(summary_data$count)])
+
+summary_data <- summary_data %>%
+  mutate(label_text = paste0("Max Score: ", round(max_score, 2)))
+
+total_genes <- data.frame(row.names = all_summary_data$disease_name, count = all_summary_data$count)
+qps_genes <- data.frame(row.names = summary_data$disease_name, count = summary_data$count)
+
+total_genes_order <- order(rownames(total_genes))
+total_genes <- total_genes[total_genes_order, ]
+qps_genes_order <- order(rownames(qps_genes))
+qps_genes <- qps_genes[qps_genes_order, ]
+
+ratio <- data.frame(row.names = qps_genes_order, ratio = (qps_genes / total_genes))
+ratio <- ratio[rownames(summary_data), ]
+summary_data <- summary_data %>%
+  mutate(ratio = ratio)
+
+library(ggnewscale)
+
+# Then, create the first part of the plot with the bar and its scale fill gradient
+p3 <- ggplot(summary_data, aes(x = disease_name, y = count, fill = avg_score)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  geom_text(data = subset(summary_data, count <= 145), aes(label = label_text), hjust = -0.1, size = 3) +
+  geom_text(data = subset(summary_data, count > 145), aes(label = label_text), hjust = 1.1, size = 3, color = "white") +
+  coord_flip() +
+  scale_fill_gradient(name = "Average Score", low = "#0000a7", high ="#c1272d") +
+  theme(
+    panel.background = element_rect(fill = "white"),
+    axis.line = element_line(colour = "black"),
+    axis.title = element_blank()
+  )
+
+# Next, use new_scale_fill() to add a new fill scale
+p3 <- p3 + new_scale_fill()
+
+# Finally, add the tile and its scale fill gradient
+p3 <- p3 + 
+  geom_tile(aes(x = disease_name, y = 0, fill = ratio), width = 0.5, height = 3, position=position_dodge(width=0.9)) +
+  scale_fill_gradient2(name = "QP to Total Gene Ratio", low = "black",high ="green", mid="black")
+
+p3
+
+ggsave(paste0(output_dir, "/genediseasebarplot_QPS7_curated.png"), p3, width = 10, height = 25, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/genediseasebarplot_QPS7_curated.svg"), p3, width = 10, height = 25, units = "in", dpi = 300)
+
+
+p4 = plot( dataQPS1,
+      class="ProteinClass",
+      )
+#p4 = p4 + coord_flip()
+
+ggsave(paste0(output_dir, "/genediseaseproteinheatmap_QPS_curated.png"), p4, width = 25, height = 10, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/genediseaseproteinheatmap_QPS_curated.svg"), p4, width = 25, height = 10, units = "in", dpi = 300)
+
+# Get the disease names with counts above 20 from summary_data
+disease_names <- summary_data %>%
+  filter(count >= 10) %>%
+  pull(disease_name)
+
+# Filter slot_data_filtered by the disease names
+slot_data_filtered <- slot_data_filtered %>%
+  filter(disease_name %in% disease_names)
+
+slot_data_filtered = slot_data_filtered[slot_data_filtered$score >=0.3,]
+
+
+p5 <- ggplot(slot_data_filtered, aes(x = disease_name, y = gene_symbol, fill = score)) +
+  geom_tile(stat = "identity") +
+  scale_fill_gradient(name = "Score", low = "#0000a7", high ="#c1272d") +
+  theme(
+    panel.background = element_rect(fill = "white"),
+    axis.line = element_line(colour = "black"),
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle = 45)
+  )
+p5
+
+ggsave(paste0(output_dir, "/genediseaseheatplot_QPS_curated.png"), p5, width = 15, height = 20, units = "in", dpi = 300)
+ggsave(paste0(output_dir, "/genediseaseheatplot_QPS_curated.svg"), p5, width = 15, height = 20, units = "in", dpi = 300)
+```
+
+
+``` {r sessioninfo}
+
+all_variables <- ls()
+# Loop over the variables and delete any that are not the Seurat object
+for (variable in all_variables) {
+  if (variable != "data") {
+    rm(list = variable)
+  }
+}
+rm(variable)
+rm(all_variables)
+
+# check if package versions match or are compatible
+sessionInfo()
+```
