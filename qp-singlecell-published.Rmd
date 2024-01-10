@@ -1261,7 +1261,8 @@ qps <- array(readLines("/data/hg38_QPs_genes_symbols.txt"))
 #https://www.disgenet.org/static/disgenet2r/disgenet2r.html
 
 # keys
-disgenet_api_key = get_disgenet_api_key("mak6930@psu.edu","Chocolatey0!")
+# MUST INSERT EMAIL AND PASSWORD
+disgenet_api_key = get_disgenet_api_key("","")
 Sys.setenv(DISGENET_API_KEY= disgenet_api_key)
 
 cluster.markers21$gene = toupper(cluster.markers21$gene)
